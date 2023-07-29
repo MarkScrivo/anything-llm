@@ -3,31 +3,14 @@ const { toChunks } = require("../../helpers");
 const { OpenAIEmbeddings } = require("langchain/embeddings/openai");
 const { RecursiveCharacterTextSplitter } = require("langchain/text_splitter");
 const { storeVectorResult, cachedVectorInformation } = require("../../files");
-const { Configuration, OpenAIApi } = require("openai");
 const { v4: uuidv4 } = require("uuid");
-
-// Since we roll our own results for prompting we
-// have to manually curate sources as well.
-function curateLanceSources(sources = []) {
-  const knownDocs = [];
-  const documents = [];
-  for (const source of sources) {
-    const { text: _t, vector: _v, score: _s, ...metadata } = source;
-    if (
-      Object.keys(metadata).length > 0 &&
-      !knownDocs.includes(metadata.title)
-    ) {
-      documents.push({ ...metadata });
-      knownDocs.push(metadata.title);
-    }
-  }
-
-  return documents;
-}
+const { chatPrompt } = require("../../chats");
+const { OpenAi } = require("../../AiProviders/openAi");
 
 const LanceDb = {
-  uri: `${!!process.env.STORAGE_DIR ? `${process.env.STORAGE_DIR}/` : "./"
-    }lancedb`,
+  uri: `${
+    !!process.env.STORAGE_DIR ? `${process.env.STORAGE_DIR}/` : "./storage/"
+  }lancedb`,
   name: "LanceDb",
   connect: async function () {
     if (process.env.VECTOR_DB !== "lancedb")
@@ -40,43 +23,53 @@ const LanceDb = {
     await this.connect();
     return { heartbeat: Number(new Date()) };
   },
-  totalIndicies: async function () {
-    return 0; // Unsupported for LanceDB - so always zero
+  tables: async function () {
+    const fs = require("fs");
+    const { client } = await this.connect();
+    const dirs = fs.readdirSync(client.uri);
+    return dirs.map((folder) => folder.replace(".lance", ""));
   },
-  embeddingFunc: function () {
-    return new lancedb.OpenAIEmbeddingFunction(
-      "context",
-      process.env.OPEN_AI_KEY
-    );
+  totalIndicies: async function () {
+    const { client } = await this.connect();
+    const tables = await this.tables();
+    let count = 0;
+    for (const tableName of tables) {
+      const table = await client.openTable(tableName);
+      count += await table.countRows();
+    }
+    return count;
+  },
+  namespaceCount: async function (_namespace = null) {
+    const { client } = await this.connect();
+    const exists = await this.namespaceExists(client, _namespace);
+    if (!exists) return 0;
+
+    const table = await client.openTable(_namespace);
+    return (await table.countRows()) || 0;
   },
   embedder: function () {
     return new OpenAIEmbeddings({ openAIApiKey: process.env.OPEN_AI_KEY });
   },
-  openai: function () {
-    const config = new Configuration({ apiKey: process.env.OPEN_AI_KEY });
-    const openai = new OpenAIApi(config);
-    return openai;
-  },
-  embedChunk: async function (openai, textChunk) {
-    const {
-      data: { data },
-    } = await openai.createEmbedding({
-      model: "text-embedding-ada-002",
-      input: textChunk,
-    });
-    return data.length > 0 && data[0].hasOwnProperty("embedding")
-      ? data[0].embedding
-      : null;
-  },
-  getChatCompletion: async function (openai, messages = []) {
-    const model = process.env.OPEN_MODEL_PREF || "gpt-3.5-turbo";
-    const { data } = await openai.createChatCompletion({
-      model,
-      messages,
+  similarityResponse: async function (client, namespace, queryVector) {
+    const collection = await client.openTable(namespace);
+    const result = {
+      contextTexts: [],
+      sourceDocuments: [],
+    };
+
+    const response = await collection
+      .search(queryVector)
+      .metricType("cosine")
+      .limit(5)
+      .execute();
+
+    response.forEach((item) => {
+      const { vector: _, ...rest } = item;
+      result.contextTexts.push(rest.text);
+      result.sourceDocuments.push(rest);
     });
 
-    if (!data.hasOwnProperty("choices")) return null;
-    return data.choices[0].message.content;
+    return result;
   },
   namespace: async function (client, namespace = null) {
     if (!namespace) throw new Error("No namespace value provided.");
@@ -88,15 +81,14 @@ const LanceDb = {
     };
   },
   updateOrCreateCollection: async function (client, data = [], namespace) {
-    if (await this.hasNamespace(namespace)) {
+    const hasNamespace = await this.hasNamespace(namespace);
+    if (hasNamespace) {
       const collection = await client.openTable(namespace);
-      const result = await collection.add(data);
-      console.log({ result });
+      await collection.add(data);
       return true;
     }
 
-    const result = await client.createTable(namespace, data);
-    console.log({ result });
+    await client.createTable(namespace, data);
     return true;
   },
   hasNamespace: async function (namespace = null) {
@@ -105,9 +97,9 @@ const LanceDb = {
     const exists = await this.namespaceExists(client, namespace);
     return exists;
   },
-  namespaceExists: async function (client, namespace = null) {
+  namespaceExists: async function (_client, namespace = null) {
     if (!namespace) throw new Error("No namespace value provided.");
-    const collections = await client.tableNames();
+    const collections = await this.tables();
     return collections.includes(namespace);
   },
   deleteVectorsInNamespace: async function (client, namespace = null) {
@@ -115,11 +107,24 @@ const LanceDb = {
     fs.rm(`${client.uri}/${namespace}.lance`, { recursive: true }, () => null);
     return true;
   },
-  deleteDocumentFromNamespace: async function (_namespace, _docId) {
-    console.error(
-      `LanceDB:deleteDocumentFromNamespace - unsupported operation. No changes made to vector db.`
+  deleteDocumentFromNamespace: async function (namespace, docId) {
+    const { client } = await this.connect();
+    const exists = await this.namespaceExists(client, namespace);
+    if (!exists) {
+      console.error(
+        `LanceDB:deleteDocumentFromNamespace - namespace ${namespace} does not exist.`
+      );
+      return;
+    }
+
+    const { DocumentVectors } = require("../../../models/vectors");
+    const table = await client.openTable(namespace);
+    const vectorIds = (await DocumentVectors.where(`docId = '${docId}'`)).map(
+      (record) => record.vectorId
     );
-    return false;
+
+    await table.delete(`id IN (${vectorIds.map((v) => `'${v}'`).join(",")})`);
+    return true;
   },
   addDocumentToNamespace: async function (
     namespace,
@@ -148,7 +153,6 @@ const LanceDb = {
           });
         }
 
-        console.log(submissions);
         await this.updateOrCreateCollection(client, submissions, namespace);
         await DocumentVectors.bulkInsert(documentVectors);
         return true;
@@ -165,22 +169,21 @@ const LanceDb = {
       const textChunks = await textSplitter.splitText(pageContent);
 
       console.log("Chunks created from document:", textChunks.length);
+      const openAiConnector = new OpenAi();
       const documentVectors = [];
       const vectors = [];
       const submissions = [];
-      const openai = this.openai();
+      const vectorValues = await openAiConnector.embedChunks(textChunks);
 
-      for (const textChunk of textChunks) {
-        const vectorValues = await this.embedChunk(openai, textChunk);
-
-        if (!!vectorValues) {
+      if (!!vectorValues && vectorValues.length > 0) {
+        for (const [i, vector] of vectorValues.entries()) {
           const vectorRecord = {
             id: uuidv4(),
-            values: vectorValues,
+            values: vector,
             // [DO NOT REMOVE]
             // LangChain will be unable to find your text if you embed manually and dont include the `text` key.
             // https://github.com/hwchase17/langchainjs/blob/2def486af734c0ca87285a48f1a04c057ab74bdf/langchain/src/vectorstores/pinecone.ts#L64
-            metadata: { ...metadata, text: textChunk },
+            metadata: { ...metadata, text: textChunks[i] },
           };
 
           vectors.push(vectorRecord);
@@ -190,11 +193,11 @@ const LanceDb = {
             ...vectorRecord.metadata,
           });
           documentVectors.push({ docId, vectorId: vectorRecord.id });
-        } else {
-          console.error(
-            "Could not use OpenAI to embed document chunk! This document will not be recorded."
-          );
         }
+      } else {
+        console.error(
+          "Could not use OpenAI to embed document chunks! This document will not be recorded."
+        );
       }
 
       if (vectors.length > 0) {
@@ -215,7 +218,7 @@ const LanceDb = {
     }
   },
   query: async function (reqBody = {}) {
-    const { namespace = null, input } = reqBody;
+    const { namespace = null, input, workspace = {} } = reqBody;
     if (!namespace || !input) throw new Error("Invalid request body");
 
     const { client } = await this.connect();
@@ -228,27 +231,81 @@ const LanceDb = {
     }
 
     // LanceDB does not have langchainJS support so we roll our own here.
-    const queryVector = await this.embedChunk(this.openai(), input);
-    const collection = await client.openTable(namespace);
-    const relevantResults = await collection
-      .search(queryVector)
-      .metricType("cosine")
-      .limit(2)
-      .execute();
-    const messages = [
-      {
-        role: "system",
-        content: `The following is a friendly conversation between a human and an AI. The AI is very casual and talkative and responds with a friendly tone. If the AI does not know the answer to a question, it truthfully says it does not know.
-      Relevant pieces of information for context of the current query:
-      ${relevantResults.map((result) => result.text).join("\n\n")}`,
-      },
-      { role: "user", content: input },
-    ];
-    const responseText = await this.getChatCompletion(this.openai(), messages);
+    const openAiConnector = new OpenAi();
+    const queryVector = await openAiConnector.embedTextInput(input);
+    const { contextTexts, sourceDocuments } = await this.similarityResponse(
+      client,
+      namespace,
+      queryVector
+    );
+    const prompt = {
+      role: "system",
+      content: `${chatPrompt(workspace)}
+    Context:
+    ${contextTexts
+      .map((text, i) => {
+        return `[CONTEXT ${i}]:\n${text}\n[END CONTEXT ${i}]\n\n`;
+      })
+      .join("")}`,
+    };
+    const memory = [prompt, { role: "user", content: input }];
+    const responseText = await openAiConnector.getChatCompletion(memory, {
+      temperature: workspace?.openAiTemp ?? 0.7,
+    });
 
     return {
       response: responseText,
-      sources: curateLanceSources(relevantResults),
+      sources: this.curateSources(sourceDocuments),
+      message: false,
+    };
+  },
+  // This implementation of chat uses the chat history and modifies the system prompt at execution
+  // this is improved over the regular langchain implementation so that chats do not directly modify embeddings
+  // because then multi-user support will have all conversations mutating the base vector collection to which then
+  // the only solution is replicating entire vector databases per user - which will very quickly consume space on VectorDbs
+  chat: async function (reqBody = {}) {
+    const {
+      namespace = null,
+      input,
+      workspace = {},
+      chatHistory = [],
+    } = reqBody;
+    if (!namespace || !input) throw new Error("Invalid request body");
+
+    const { client } = await this.connect();
+    if (!(await this.namespaceExists(client, namespace))) {
+      return {
+        response: null,
+        sources: [],
+        message: "Invalid query - no documents found for workspace!",
+      };
+    }
+
+    const openAiConnector = new OpenAi();
+    const queryVector = await openAiConnector.embedTextInput(input);
+    const { contextTexts, sourceDocuments } = await this.similarityResponse(
+      client,
+      namespace,
+      queryVector
+    );
+    const prompt = {
+      role: "system",
+      content: `${chatPrompt(workspace)}
+    Context:
+    ${contextTexts
+      .map((text, i) => {
+        return `[CONTEXT ${i}]:\n${text}\n[END CONTEXT ${i}]\n\n`;
+      })
+      .join("")}`,
+    };
+    const memory = [prompt, ...chatHistory, { role: "user", content: input }];
+    const responseText = await openAiConnector.getChatCompletion(memory, {
+      temperature: workspace?.openAiTemp ?? 0.7,
+    });
+
+    return {
+      response: responseText,
+      sources: this.curateSources(sourceDocuments),
       message: false,
     };
   },
@@ -280,6 +337,17 @@ const LanceDb = {
     fs.rm(`${client.uri}`, { recursive: true }, () => null);
     return { reset: true };
   },
+  curateSources: function (sources = []) {
+    const documents = [];
+    for (const source of sources) {
+      const { text, vector: _v, score: _s, ...metadata } = source;
+      if (Object.keys(metadata).length > 0) {
+        documents.push({ ...metadata, text });
+      }
+    }
+
+    return documents;
+  },
 };
 
-module.exports.LanceDb = LanceDb
+module.exports.LanceDb = LanceDb;

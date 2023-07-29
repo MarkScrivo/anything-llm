@@ -22,25 +22,7 @@ function toChunks(arr, size) {
   );
 }
 
-function curateSources(sources = []) {
-  const knownDocs = [];
-  const documents = [];
-  for (const source of sources) {
-    const { metadata = {} } = source;
-    if (
-      Object.keys(metadata).length > 0 &&
-      !knownDocs.includes(metadata.title)
-    ) {
-      documents.push({ ...metadata });
-      knownDocs.push(metadata.title);
-    }
-  }
-
-  return documents;
-}
-
 module.exports = {
   getVectorDbClass,
   toChunks,
-  curateSources,
 };

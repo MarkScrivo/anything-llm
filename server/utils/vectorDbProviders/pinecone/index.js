@@ -1,16 +1,14 @@
 const { PineconeClient } = require("@pinecone-database/pinecone");
 const { PineconeStore } = require("langchain/vectorstores/pinecone");
 const { OpenAI } = require("langchain/llms/openai");
-const { ChatOpenAI } = require("langchain/chat_models/openai");
-const { VectorDBQAChain, LLMChain } = require("langchain/chains");
+const { VectorDBQAChain } = require("langchain/chains");
 const { OpenAIEmbeddings } = require("langchain/embeddings/openai");
-const { VectorStoreRetrieverMemory } = require("langchain/memory");
-const { PromptTemplate } = require("langchain/prompts");
 const { RecursiveCharacterTextSplitter } = require("langchain/text_splitter");
 const { storeVectorResult, cachedVectorInformation } = require("../../files");
-const { Configuration, OpenAIApi } = require("openai");
 const { v4: uuidv4 } = require("uuid");
-const { toChunks, curateSources } = require("../../helpers");
+const { toChunks } = require("../../helpers");
+const { chatPrompt } = require("../../chats");
+const { OpenAi } = require("../../AiProviders/openAi");
 
 const Pinecone = {
   name: "Pinecone",
@@ -34,36 +32,12 @@ const Pinecone = {
   embedder: function () {
     return new OpenAIEmbeddings({ openAIApiKey: process.env.OPEN_AI_KEY });
   },
-  openai: function () {
-    const config = new Configuration({ apiKey: process.env.OPEN_AI_KEY });
-    const openai = new OpenAIApi(config);
-    return openai;
-  },
-  embedChunk: async function (openai, textChunk) {
-    const {
-      data: { data },
-    } = await openai.createEmbedding({
-      model: "text-embedding-ada-002",
-      input: textChunk,
-    });
-    return data.length > 0 && data[0].hasOwnProperty("embedding")
-      ? data[0].embedding
-      : null;
-  },
-  llm: function () {
+  llm: function ({ temperature = 0.7 }) {
     const model = process.env.OPEN_MODEL_PREF || "gpt-3.5-turbo";
     return new OpenAI({
       openAIApiKey: process.env.OPEN_AI_KEY,
-      temperature: 0.7,
       modelName: model,
-    });
-  },
-  chatLLM: function () {
-    const model = process.env.OPEN_MODEL_PREF || "gpt-3.5-turbo";
-    return new ChatOpenAI({
-      openAIApiKey: process.env.OPEN_AI_KEY,
-      temperature: 0.7,
-      modelName: model,
+      temperature,
     });
   },
   totalIndicies: async function () {
@@ -73,6 +47,32 @@ const Pinecone = {
       (a, b) => a + (b?.vectorCount || 0),
       0
     );
+  },
+  namespaceCount: async function (_namespace = null) {
+    const { pineconeIndex } = await this.connect();
+    const namespace = await this.namespace(pineconeIndex, _namespace);
+    return namespace?.vectorCount || 0;
+  },
+  similarityResponse: async function (index, namespace, queryVector) {
+    const result = {
+      contextTexts: [],
+      sourceDocuments: [],
+    };
+    const response = await index.query({
+      queryRequest: {
+        namespace,
+        vector: queryVector,
+        topK: 4,
+        includeMetadata: true,
+      },
+    });
+
+    response.matches.forEach((match) => {
+      result.contextTexts.push(match.metadata.text);
+      result.sourceDocuments.push(match);
+    });
+
+    return result;
   },
   namespace: async function (index, namespace = null) {
     if (!namespace) throw new Error("No namespace value provided.");
@@ -144,28 +144,29 @@ const Pinecone = {
       const textChunks = await textSplitter.splitText(pageContent);
 
       console.log("Chunks created from document:", textChunks.length);
+      const openAiConnector = new OpenAi();
       const documentVectors = [];
       const vectors = [];
-      const openai = this.openai();
-      for (const textChunk of textChunks) {
-        const vectorValues = await this.embedChunk(openai, textChunk);
+      const vectorValues = await openAiConnector.embedChunks(textChunks);
 
-        if (!!vectorValues) {
+      if (!!vectorValues && vectorValues.length > 0) {
+        for (const [i, vector] of vectorValues.entries()) {
           const vectorRecord = {
             id: uuidv4(),
-            values: vectorValues,
+            values: vector,
             // [DO NOT REMOVE]
             // LangChain will be unable to find your text if you embed manually and dont include the `text` key.
             // https://github.com/hwchase17/langchainjs/blob/2def486af734c0ca87285a48f1a04c057ab74bdf/langchain/src/vectorstores/pinecone.ts#L64
-            metadata: { ...metadata, text: textChunk },
+            metadata: { ...metadata, text: textChunks[i] },
           };
+
           vectors.push(vectorRecord);
           documentVectors.push({ docId, vectorId: vectorRecord.id });
-        } else {
-          console.error(
-            "Could not use OpenAI to embed document chunk! This document will not be recorded."
-          );
         }
+      } else {
+        console.error(
+          "Could not use OpenAI to embed document chunks! This document will not be recorded."
+        );
       }
 
       if (vectors.length > 0) {
@@ -233,7 +234,7 @@ const Pinecone = {
     };
   },
   query: async function (reqBody = {}) {
-    const { namespace = null, input } = reqBody;
+    const { namespace = null, input, workspace = {} } = reqBody;
     if (!namespace || !input) throw new Error("Invalid request body");
 
     const { pineconeIndex } = await this.connect();
@@ -250,7 +251,9 @@ const Pinecone = {
       namespace,
     });
 
-    const model = this.llm();
+    const model = this.llm({
+      temperature: workspace?.openAiTemp ?? 0.7,
+    });
     const chain = VectorDBQAChain.fromLLM(model, vectorStore, {
       k: 5,
       returnSourceDocuments: true,
@@ -258,14 +261,21 @@ const Pinecone = {
     const response = await chain.call({ query: input });
     return {
       response: response.text,
-      sources: curateSources(response.sourceDocuments),
+      sources: this.curateSources(response.sourceDocuments),
       message: false,
     };
   },
-  // This implementation of chat also expands the memory of the chat itself
-  // and adds more tokens to the PineconeDB instance namespace
+  // This implementation of chat uses the chat history and modifies the system prompt at execution
+  // this is improved over the regular langchain implementation so that chats do not directly modify embeddings
+  // because then multi-user support will have all conversations mutating the base vector collection to which then
+  // the only solution is replicating entire vector databases per user - which will very quickly consume space on VectorDbs
   chat: async function (reqBody = {}) {
-    const { namespace = null, input } = reqBody;
+    const {
+      namespace = null,
+      input,
+      workspace = {},
+      chatHistory = [],
+    } = reqBody;
     if (!namespace || !input) throw new Error("Invalid request body");
 
     const { pineconeIndex } = await this.connect();
@@ -274,29 +284,50 @@ const Pinecone = {
         "Invalid namespace - has it been collected and seeded yet?"
       );
 
-    const vectorStore = await PineconeStore.fromExistingIndex(this.embedder(), {
+    const openAiConnector = new OpenAi();
+    const queryVector = await openAiConnector.embedTextInput(input);
+    const { contextTexts, sourceDocuments } = await this.similarityResponse(
       pineconeIndex,
       namespace,
+      queryVector
+    );
+    const prompt = {
+      role: "system",
+      content: `${chatPrompt(workspace)}
+    Context:
+    ${contextTexts
+      .map((text, i) => {
+        return `[CONTEXT ${i}]:\n${text}\n[END CONTEXT ${i}]\n\n`;
+      })
+      .join("")}`,
+    };
+
+    const memory = [prompt, ...chatHistory, { role: "user", content: input }];
+    const responseText = await openAiConnector.getChatCompletion(memory, {
+      temperature: workspace?.openAiTemp ?? 0.7,
     });
 
-    const memory = new VectorStoreRetrieverMemory({
-      vectorStoreRetriever: vectorStore.asRetriever(1),
-      memoryKey: "history",
-    });
+    return {
+      response: responseText,
+      sources: this.curateSources(sourceDocuments),
+      message: false,
+    };
+  },
+  curateSources: function (sources = []) {
+    const documents = [];
+    for (const source of sources) {
+      const { metadata = {} } = source;
+      if (Object.keys(metadata).length > 0) {
+        documents.push({
+          ...metadata,
+          ...(source.hasOwnProperty("pageContent")
+            ? { text: source.pageContent }
+            : {}),
+        });
+      }
+    }
 
-    const model = this.llm();
-    const prompt =
-      PromptTemplate.fromTemplate(`The following is a friendly conversation between a human and an AI. The AI is very casual and talkative and responds with a friendly tone. If the AI does not know the answer to a question, it truthfully says it does not know.
-  Relevant pieces of previous conversation:
-  {history}
-  
-  Current conversation:
-  Human: {input}
-  AI:`);
-
-    const chain = new LLMChain({ llm: model, prompt, memory });
-    const response = await chain.call({ input });
-    return { response: response.text, sources: [], message: false };
+    return documents;
   },
 };
 

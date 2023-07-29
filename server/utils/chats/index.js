@@ -1,5 +1,5 @@
 const { v4: uuidv4 } = require("uuid");
-const { OpenAi } = require("../openAi");
+const { OpenAi } = require("../AiProviders/openAi");
 const { WorkspaceChats } = require("../../models/workspaceChats");
 const { resetMemory } = require("./commands/reset");
 const moment = require("moment");
@@ -59,14 +59,19 @@ function grepCommand(message) {
   return null;
 }
 
-async function chatWithWorkspace(workspace, message, chatMode = "query") {
+async function chatWithWorkspace(
+  workspace,
+  message,
+  chatMode = "chat",
+  user = null
+) {
   const uuid = uuidv4();
   const openai = new OpenAi();
   const VectorDb = getVectorDbClass();
   const command = grepCommand(message);
 
   if (!!command && Object.keys(VALID_COMMANDS).includes(command)) {
-    return await VALID_COMMANDS[command](workspace, message, uuid);
+    return await VALID_COMMANDS[command](workspace, message, uuid, user);
   }
 
   const { safe, reasons = [] } = await openai.isSafe(message);
@@ -84,16 +89,18 @@ async function chatWithWorkspace(workspace, message, chatMode = "query") {
   }
 
   const hasVectorizedSpace = await VectorDb.hasNamespace(workspace.slug);
-  if (!hasVectorizedSpace) {
+  const embeddingsCount = await VectorDb.namespaceCount(workspace.slug);
+  if (!hasVectorizedSpace || embeddingsCount === 0) {
     const rawHistory = await WorkspaceChats.forWorkspace(workspace.id);
     const chatHistory = convertToPromptHistory(rawHistory);
-    const response = await openai.sendChat(chatHistory, message);
+    const response = await openai.sendChat(chatHistory, message, workspace);
     const data = { text: response, sources: [], type: "chat" };
 
     await WorkspaceChats.new({
       workspaceId: workspace.id,
       prompt: message,
       response: data,
+      user,
     });
     return {
       id: uuid,
@@ -104,11 +111,23 @@ async function chatWithWorkspace(workspace, message, chatMode = "query") {
       error: null,
     };
   } else {
+    var messageLimit = workspace?.openAiHistory;
+
+    const rawHistory = await WorkspaceChats.forWorkspace(
+      workspace.id,
+      messageLimit
+    );
+    const chatHistory = convertToPromptHistory(rawHistory);
     const {
       response,
       sources,
       message: error,
-    } = await VectorDb[chatMode]({ namespace: workspace.slug, input: message });
+    } = await VectorDb[chatMode]({
+      namespace: workspace.slug,
+      input: message,
+      workspace,
+      chatHistory,
+    });
     if (!response) {
       return {
         id: uuid,
@@ -125,6 +144,7 @@ async function chatWithWorkspace(workspace, message, chatMode = "query") {
       workspaceId: workspace.id,
       prompt: message,
       response: data,
+      user,
     });
     return {
       id: uuid,
@@ -136,7 +156,16 @@ async function chatWithWorkspace(workspace, message, chatMode = "query") {
     };
   }
 }
+
+function chatPrompt(workspace) {
+  return (
+    workspace?.openAiPrompt ??
+    "Given the following conversation, relevant context, and a follow up question, reply with an answer to the current question the user is asking. Return only your response to the question given the above information following the users instructions as needed."
+  );
+}
+
 module.exports = {
   convertToChatHistory,
   chatWithWorkspace,
+  chatPrompt,
 };

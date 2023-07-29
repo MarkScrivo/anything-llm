@@ -133,6 +133,26 @@ a {
   }
 }
 
+@media (prefers-color-scheme: light) {
+  .fade-up-border {
+    background: linear-gradient(
+      to bottom,
+      rgba(220, 221, 223, 10%),
+      rgb(220, 221, 223) 89%
+    );
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .fade-up-border {
+    background: linear-gradient(
+      to bottom,
+      rgba(41, 37, 36, 50%),
+      rgb(41 37 36) 90%
+    );
+  }
+}
+
 /**
  * ==============================================
  * Dot Falling
@@ -256,38 +276,25 @@ a {
   height: 100px !important;
 }
 
-.blink {
-  animation: blink 1.5s steps(1) infinite;
+.grid-loader > circle {
+  fill: #008eff;
 }
 
-@keyframes blink {
-  0% {
-    opacity: 0;
-  }
-
-  50% {
-    opacity: 1;
-  }
-
-  100% {
-    opacity: 0;
-  }
+dialog {
+  pointer-events: none;
+  opacity: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
 }
 
-.background-animate {
-  background-size: 400%;
-  -webkit-animation: bgAnimate 10s ease infinite;
-  -moz-animation: bgAnimate 10s ease infinite;
-  animation: bgAnimate 10s ease infinite;
+dialog[open] {
+  opacity: 1;
+  pointer-events: inherit;
 }
 
-@keyframes bgAnimate {
-  0%,
-  100% {
-    background-position: 0% 50%;
-  }
-
-  50% {
-    background-position: 100% 50%;
-  }
+dialog::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(2px);
 }

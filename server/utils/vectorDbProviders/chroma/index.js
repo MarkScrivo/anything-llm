@@ -1,14 +1,14 @@
 const { ChromaClient, OpenAIEmbeddingFunction } = require("chromadb");
 const { Chroma: ChromaStore } = require("langchain/vectorstores/chroma");
 const { OpenAI } = require("langchain/llms/openai");
-const { ChatOpenAI } = require("langchain/chat_models/openai");
 const { VectorDBQAChain } = require("langchain/chains");
 const { OpenAIEmbeddings } = require("langchain/embeddings/openai");
 const { RecursiveCharacterTextSplitter } = require("langchain/text_splitter");
 const { storeVectorResult, cachedVectorInformation } = require("../../files");
-const { Configuration, OpenAIApi } = require("openai");
 const { v4: uuidv4 } = require("uuid");
-const { toChunks, curateSources } = require("../../helpers");
+const { toChunks } = require("../../helpers");
+const { chatPrompt } = require("../../chats");
+const { OpenAi } = require("../../AiProviders/openAi");
 
 const Chroma = {
   name: "Chroma",
@@ -44,6 +44,11 @@ const Chroma = {
     }
     return totalVectors;
   },
+  namespaceCount: async function (_namespace = null) {
+    const { client } = await this.connect();
+    const namespace = await this.namespace(client, _namespace);
+    return namespace?.vectorCount || 0;
+  },
   embeddingFunc: function () {
     return new OpenAIEmbeddingFunction({
       openai_api_key: process.env.OPEN_AI_KEY,
@@ -52,29 +57,31 @@ const Chroma = {
   embedder: function () {
     return new OpenAIEmbeddings({ openAIApiKey: process.env.OPEN_AI_KEY });
   },
-  openai: function () {
-    const config = new Configuration({ apiKey: process.env.OPEN_AI_KEY });
-    const openai = new OpenAIApi(config);
-    return openai;
-  },
-  llm: function () {
+  llm: function ({ temperature = 0.7 }) {
     const model = process.env.OPEN_MODEL_PREF || "gpt-3.5-turbo";
     return new OpenAI({
       openAIApiKey: process.env.OPEN_AI_KEY,
-      temperature: 0.7,
       modelName: model,
+      temperature,
     });
   },
-  embedChunk: async function (openai, textChunk) {
-    const {
-      data: { data },
-    } = await openai.createEmbedding({
-      model: "text-embedding-ada-002",
-      input: textChunk,
+  similarityResponse: async function (client, namespace, queryVector) {
+    const collection = await client.getCollection({ name: namespace });
+    const result = {
+      contextTexts: [],
+      sourceDocuments: [],
+    };
+
+    const response = await collection.query({
+      queryEmbeddings: queryVector,
+      nResults: 4,
     });
-    return data.length > 0 && data[0].hasOwnProperty("embedding")
-      ? data[0].embedding
-      : null;
+    response.ids[0].forEach((_, i) => {
+      result.contextTexts.push(response.documents[0][i]);
+      result.sourceDocuments.push(response.metadatas[0][i]);
+    });
+
+    return result;
   },
   namespace: async function (client, namespace = null) {
     if (!namespace) throw new Error("No namespace value provided.");
@@ -169,10 +176,10 @@ const Chroma = {
       const textChunks = await textSplitter.splitText(pageContent);
 
       console.log("Chunks created from document:", textChunks.length);
+      const openAiConnector = new OpenAi();
       const documentVectors = [];
       const vectors = [];
-      const openai = this.openai();
-
+      const vectorValues = await openAiConnector.embedChunks(textChunks);
       const submission = {
         ids: [],
         embeddings: [],
@@ -180,31 +187,29 @@ const Chroma = {
         documents: [],
       };
 
-      for (const textChunk of textChunks) {
-        const vectorValues = await this.embedChunk(openai, textChunk);
-
-        if (!!vectorValues) {
+      if (!!vectorValues && vectorValues.length > 0) {
+        for (const [i, vector] of vectorValues.entries()) {
           const vectorRecord = {
             id: uuidv4(),
-            values: vectorValues,
+            values: vector,
             // [DO NOT REMOVE]
             // LangChain will be unable to find your text if you embed manually and dont include the `text` key.
             // https://github.com/hwchase17/langchainjs/blob/2def486af734c0ca87285a48f1a04c057ab74bdf/langchain/src/vectorstores/pinecone.ts#L64
-            metadata: { ...metadata, text: textChunk },
+            metadata: { ...metadata, text: textChunks[i] },
           };
 
           submission.ids.push(vectorRecord.id);
           submission.embeddings.push(vectorRecord.values);
           submission.metadatas.push(metadata);
-          submission.documents.push(textChunk);
+          submission.documents.push(textChunks[i]);
 
           vectors.push(vectorRecord);
           documentVectors.push({ docId, vectorId: vectorRecord.id });
-        } else {
-          console.error(
-            "Could not use OpenAI to embed document chunk! This document will not be recorded."
-          );
         }
+      } else {
+        console.error(
+          "Could not use OpenAI to embed document chunks! This document will not be recorded."
+        );
       }
 
       const { client } = await this.connect();
@@ -254,7 +259,7 @@ const Chroma = {
     return true;
   },
   query: async function (reqBody = {}) {
-    const { namespace = null, input } = reqBody;
+    const { namespace = null, input, workspace = {} } = reqBody;
     if (!namespace || !input) throw new Error("Invalid request body");
 
     const { client } = await this.connect();
@@ -270,7 +275,10 @@ const Chroma = {
       this.embedder(),
       { collectionName: namespace, url: process.env.CHROMA_ENDPOINT }
     );
-    const model = this.llm();
+    const model = this.llm({
+      temperature: workspace?.openAiTemp ?? 0.7,
+    });
+
     const chain = VectorDBQAChain.fromLLM(model, vectorStore, {
       k: 5,
       returnSourceDocuments: true,
@@ -278,7 +286,62 @@ const Chroma = {
     const response = await chain.call({ query: input });
     return {
       response: response.text,
-      sources: curateSources(response.sourceDocuments),
+      sources: this.curateSources(response.sourceDocuments),
+      message: false,
+    };
+  },
+  // This implementation of chat uses the chat history and modifies the system prompt at execution
+  // this is improved over the regular langchain implementation so that chats do not directly modify embeddings
+  // because then multi-user support will have all conversations mutating the base vector collection to which then
+  // the only solution is replicating entire vector databases per user - which will very quickly consume space on VectorDbs
+  chat: async function (reqBody = {}) {
+    const {
+      namespace = null,
+      input,
+      workspace = {},
+      chatHistory = [],
+    } = reqBody;
+    if (!namespace || !input) throw new Error("Invalid request body");
+
+    const { client } = await this.connect();
+    if (!(await this.namespaceExists(client, namespace))) {
+      return {
+        response: null,
+        sources: [],
+        message: "Invalid query - no documents found for workspace!",
+      };
+    }
+
+    const openAiConnector = new OpenAi();
+    const queryVector = await openAiConnector.embedTextInput(input);
+    const { contextTexts, sourceDocuments } = await this.similarityResponse(
+      client,
+      namespace,
+      queryVector
+    );
+    const prompt = {
+      role: "system",
+      content: `${chatPrompt(workspace)}
+    Context:
+    ${contextTexts
+      .map((text, i) => {
+        return `[CONTEXT ${i}]:\n${text}\n[END CONTEXT ${i}]\n\n`;
+      })
+      .join("")}`,
+    };
+    const memory = [prompt, ...chatHistory, { role: "user", content: input }];
+    const responseText = await openAiConnector.getChatCompletion(memory, {
+      temperature: workspace?.openAiTemp ?? 0.7,
+    });
+
+    // When we roll out own response we have separate metadata and texts,
+    // so for source collection we need to combine them.
+    const sources = sourceDocuments.map((metadata, i) => {
+      return { metadata: { ...metadata, text: contextTexts[i] } };
+    });
+    return {
+      response: responseText,
+      sources: this.curateSources(sources),
       message: false,
     };
   },
@@ -309,6 +372,22 @@ const Chroma = {
     const { client } = await this.connect();
     await client.reset();
     return { reset: true };
+  },
+  curateSources: function (sources = []) {
+    const documents = [];
+    for (const source of sources) {
+      const { metadata = {} } = source;
+      if (Object.keys(metadata).length > 0) {
+        documents.push({
+          ...metadata,
+          ...(source.hasOwnProperty("pageContent")
+            ? { text: source.pageContent }
+            : {}),
+        });
+      }
+    }
+
+    return documents;
   },
 };
 
