@@ -7,14 +7,12 @@ const { convertToChatHistory } = require("../utils/chats");
 const { getVectorDbClass } = require("../utils/helpers");
 const { setupMulter } = require("../utils/files/multer");
 const {
-  fileUploadProgress,
-} = require("../utils/middleware/fileUploadProgress");
-const {
   checkPythonAppAlive,
   processDocument,
 } = require("../utils/files/documentProcessor");
 const { validatedRequest } = require("../utils/middleware/validatedRequest");
 const { SystemSettings } = require("../models/systemSettings");
+const { Telemetry } = require("../models/telemetry");
 const { handleUploads } = setupMulter();
 
 function workspaceEndpoints(app) {
@@ -25,6 +23,11 @@ function workspaceEndpoints(app) {
       const user = await userFromSession(request, response);
       const { name = null } = reqBody(request);
       const { workspace, message } = await Workspace.new(name, user?.id);
+      await Telemetry.sendTelemetry("workspace_created", {
+        multiUserMode: multiUserMode(response),
+        LLMSelection: process.env.LLM_PROVIDER || "openai",
+        VectorDbSelection: process.env.VECTOR_DB || "pinecone",
+      });
       response.status(200).json({ workspace, message });
     } catch (e) {
       console.log(e.message, e);
@@ -63,31 +66,31 @@ function workspaceEndpoints(app) {
 
   app.post(
     "/workspace/:slug/upload",
-    fileUploadProgress,
     handleUploads.single("file"),
-    async function (request, _) {
+    async function (request, response) {
       const { originalname } = request.file;
       const processingOnline = await checkPythonAppAlive();
 
       if (!processingOnline) {
-        console.log(
-          `Python processing API is not online. Document ${originalname} will not be processed automatically.`
-        );
-        return;
+        response
+          .status(500)
+          .json({
+            success: false,
+            error: `Python processing API is not online. Document ${originalname} will not be processed automatically.`,
+          })
+          .end();
       }
 
       const { success, reason } = await processDocument(originalname);
       if (!success) {
-        console.log(
-          `Python processing API was not able to process document ${originalname}. Reason: ${reason}`
-        );
-        return false;
+        response.status(500).json({ success: false, error: reason }).end();
       }
 
       console.log(
         `Document ${originalname} uploaded processed and successfully. It is now available in documents.`
       );
-      return;
+      await Telemetry.sendTelemetry("document_uploaded");
+      response.status(200).json({ success: true, error: null });
     }
   );
 

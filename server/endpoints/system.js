@@ -10,25 +10,38 @@ const {
 } = require("../utils/files/documentProcessor");
 const { purgeDocument } = require("../utils/files/purgeDocument");
 const { getVectorDbClass } = require("../utils/helpers");
-const { updateENV } = require("../utils/helpers/updateENV");
+const { updateENV, dumpENV } = require("../utils/helpers/updateENV");
 const {
   reqBody,
   makeJWT,
   userFromSession,
   multiUserMode,
 } = require("../utils/http");
-const { setupDataImports } = require("../utils/files/multer");
+const { setupDataImports, setupLogoUploads } = require("../utils/files/multer");
 const { v4 } = require("uuid");
 const { SystemSettings } = require("../models/systemSettings");
 const { User } = require("../models/user");
 const { validatedRequest } = require("../utils/middleware/validatedRequest");
 const { handleImports } = setupDataImports();
+const { handleLogoUploads } = setupLogoUploads();
+const path = require("path");
+const {
+  getDefaultFilename,
+  determineLogoFilepath,
+  fetchLogo,
+  validFilename,
+  renameLogoFile,
+  removeCustomLogo,
+  DARK_LOGO_FILENAME,
+} = require("../utils/files/logo");
+const { Telemetry } = require("../models/telemetry");
+const { WelcomeMessages } = require("../models/welcomeMessages");
 
 function systemEndpoints(app) {
   if (!app) return;
 
   app.get("/ping", (_, response) => {
-    response.sendStatus(200);
+    response.status(200).json({ online: true });
   });
 
   app.get("/migrate", async (_, response) => {
@@ -36,19 +49,25 @@ function systemEndpoints(app) {
     response.sendStatus(200);
   });
 
+  app.get("/env-dump", async (_, response) => {
+    if (process.env.NODE_ENV !== "production")
+      return response.sendStatus(200).end();
+    await dumpENV();
+    response.sendStatus(200).end();
+  });
+
   app.get("/setup-complete", async (_, response) => {
     try {
+      const llmProvider = process.env.LLM_PROVIDER || "openai";
       const vectorDB = process.env.VECTOR_DB || "pinecone";
       const results = {
         CanDebug: !!!process.env.NO_DEBUG,
         RequiresAuth: !!process.env.AUTH_TOKEN,
-        VectorDB: vectorDB,
-        OpenAiKey: !!process.env.OPEN_AI_KEY,
-        OpenAiModelPref: process.env.OPEN_MODEL_PREF || "gpt-3.5-turbo",
         AuthToken: !!process.env.AUTH_TOKEN,
         JWTSecret: !!process.env.JWT_SECRET,
         StorageDir: process.env.STORAGE_DIR,
         MultiUserMode: await SystemSettings.isMultiUserMode(),
+        VectorDB: vectorDB,
         ...(vectorDB === "pinecone"
           ? {
               PineConeEnvironment: process.env.PINECONE_ENVIRONMENT,
@@ -59,6 +78,34 @@ function systemEndpoints(app) {
         ...(vectorDB === "chroma"
           ? {
               ChromaEndpoint: process.env.CHROMA_ENDPOINT,
+            }
+          : {}),
+        ...(vectorDB === "weaviate"
+          ? {
+              WeaviateEndpoint: process.env.WEAVIATE_ENDPOINT,
+              WeaviateApiKey: process.env.WEAVIATE_API_KEY,
+            }
+          : {}),
+        ...(vectorDB === "qdrant"
+          ? {
+              QdrantEndpoint: process.env.QDRANT_ENDPOINT,
+              QdrantApiKey: process.env.QDRANT_API_KEY,
+            }
+          : {}),
+        LLMProvider: llmProvider,
+        ...(llmProvider === "openai"
+          ? {
+              OpenAiKey: !!process.env.OPEN_AI_KEY,
+              OpenAiModelPref: process.env.OPEN_MODEL_PREF || "gpt-3.5-turbo",
+            }
+          : {}),
+
+        ...(llmProvider === "azure"
+          ? {
+              AzureOpenAiEndpoint: process.env.AZURE_OPENAI_ENDPOINT,
+              AzureOpenAiKey: !!process.env.AZURE_OPENAI_KEY,
+              AzureOpenAiModelPref: process.env.OPEN_MODEL_PREF,
+              AzureOpenAiEmbeddingModelPref: process.env.EMBEDDING_MODEL_PREF,
             }
           : {}),
       };
@@ -239,6 +286,7 @@ function systemEndpoints(app) {
       try {
         const body = reqBody(request);
         const { newValues, error } = updateENV(body);
+        if (process.env.NODE_ENV === "production") await dumpENV();
         response.status(200).json({ newValues, error });
       } catch (e) {
         console.log(e.message, e);
@@ -293,6 +341,7 @@ function systemEndpoints(app) {
         });
         process.env.AUTH_TOKEN = null;
         process.env.JWT_SECRET = process.env.JWT_SECRET ?? v4(); // Make sure JWT_SECRET is set for JWT issuance.
+        await Telemetry.sendTelemetry("enabled_multi_user_mode");
         response.status(200).json({ success: !!user, error });
       } catch (e) {
         console.log(e.message, e);
@@ -335,6 +384,146 @@ function systemEndpoints(app) {
       const { originalname } = request.file;
       const { success, error } = await unpackAndOverwriteImport(originalname);
       response.status(200).json({ success, error });
+    }
+  );
+
+  app.get("/system/logo/:mode?", async function (request, response) {
+    try {
+      const defaultFilename = getDefaultFilename(request.params.mode);
+      const logoPath = await determineLogoFilepath(defaultFilename);
+      const { buffer, size, mime } = fetchLogo(logoPath);
+      response.writeHead(200, {
+        "Content-Type": mime || "image/png",
+        "Content-Disposition": `attachment; filename=${path.basename(
+          logoPath
+        )}`,
+        "Content-Length": size,
+      });
+      response.end(Buffer.from(buffer, "base64"));
+      return;
+    } catch (error) {
+      console.error("Error processing the logo request:", error);
+      response.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.post(
+    "/system/upload-logo",
+    [validatedRequest],
+    handleLogoUploads.single("logo"),
+    async (request, response) => {
+      if (!request.file || !request.file.originalname) {
+        return response.status(400).json({ message: "No logo file provided." });
+      }
+
+      if (!validFilename(request.file.originalname)) {
+        return response.status(400).json({
+          message: "Invalid file name. Please choose a different file.",
+        });
+      }
+
+      try {
+        if (
+          response.locals.multiUserMode &&
+          response.locals.user?.role !== "admin"
+        ) {
+          return response.sendStatus(401).end();
+        }
+
+        const newFilename = await renameLogoFile(request.file.originalname);
+        const existingLogoFilename = await SystemSettings.currentLogoFilename();
+        await removeCustomLogo(existingLogoFilename);
+
+        const { success, error } = await SystemSettings.updateSettings({
+          logo_filename: newFilename,
+        });
+
+        return response.status(success ? 200 : 500).json({
+          message: success
+            ? "Logo uploaded successfully."
+            : error || "Failed to update with new logo.",
+        });
+      } catch (error) {
+        console.error("Error processing the logo upload:", error);
+        response.status(500).json({ message: "Error uploading the logo." });
+      }
+    }
+  );
+
+  app.get(
+    "/system/remove-logo",
+    [validatedRequest],
+    async (request, response) => {
+      try {
+        if (
+          response.locals.multiUserMode &&
+          response.locals.user?.role !== "admin"
+        ) {
+          return response.sendStatus(401).end();
+        }
+
+        const currentLogoFilename = await SystemSettings.currentLogoFilename();
+        await removeCustomLogo(currentLogoFilename);
+        const { success, error } = await SystemSettings.updateSettings({
+          logo_filename: DARK_LOGO_FILENAME,
+        });
+
+        return response.status(success ? 200 : 500).json({
+          message: success
+            ? "Logo removed successfully."
+            : error || "Failed to update with new logo.",
+        });
+      } catch (error) {
+        console.error("Error processing the logo removal:", error);
+        response.status(500).json({ message: "Error removing the logo." });
+      }
+    }
+  );
+
+  app.get("/system/welcome-messages", async function (request, response) {
+    try {
+      const welcomeMessages = await WelcomeMessages.getMessages();
+      response.status(200).json({ success: true, welcomeMessages });
+    } catch (error) {
+      console.error("Error fetching welcome messages:", error);
+      response
+        .status(500)
+        .json({ success: false, message: "Internal server error" });
+    }
+  });
+
+  app.post(
+    "/system/set-welcome-messages",
+    [validatedRequest],
+    async (request, response) => {
+      try {
+        if (
+          response.locals.multiUserMode &&
+          response.locals.user?.role !== "admin"
+        ) {
+          return response.sendStatus(401).end();
+        }
+
+        const { messages = [] } = reqBody(request);
+        if (!Array.isArray(messages)) {
+          return response.status(400).json({
+            success: false,
+            message: "Invalid message format. Expected an array of messages.",
+          });
+        }
+
+        await WelcomeMessages.saveAll(messages);
+        return response.status(200).json({
+          success: true,
+          message: "Welcome messages saved successfully.",
+        });
+      } catch (error) {
+        console.error("Error processing the welcome messages:", error);
+        response.status(500).json({
+          success: true,
+          message: "Error saving the welcome messages.",
+        });
+      }
     }
   );
 }

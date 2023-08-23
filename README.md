@@ -1,20 +1,24 @@
 <p align="center">
-    <b>🤖 AnythingLLM: A full-stack personalized AI assistant</b>. <br />
-    A hyper-efficient and open-source document chatbot solution for all.
+  <a href="https://useanything.com"><img src="https://github.com/Mintplex-Labs/anything-llm/blob/master/images/wordmark.png?raw=true" alt="AnythingLLM logo"></a>
 </p>
 
 <p align="center">
- <a href="https://twitter.com/tcarambat" target="_blank">
-      <img src="https://img.shields.io/twitter/url/https/twitter.com/tim.svg?style=social&label=Follow%20%40Timothy%20Carambat" alt="Twitter">
-  </a> |
+    <b>AnythingLLM: A business-compliant document chatbot</b>. <br />
+    A hyper-efficient and open-source enterprise-ready document chatbot solution for all.
+</p>
+
+<p align="center">
   <a href="https://discord.gg/6UyHPeGZAC" target="_blank">
       <img src="https://dcbadge.vercel.app/api/server/6UyHPeGZAC?compact=true&style=flat" alt="Discord">
   </a> |
   <a href="https://github.com/Mintplex-Labs/anything-llm/blob/master/LICENSE" target="_blank">
       <img src="https://img.shields.io/static/v1?label=license&message=MIT&color=white" alt="License">
   </a> |
-  <a href="https://docs.mintplex.xyz/anythingllm-by-mintplex-labs/" target="_blank">
+  <a href="https://docs.useanything.com" target="_blank">
     Docs
+  </a> |
+   <a href="https://my.mintplexlabs.com/aio-checkout?product=anythingllm" target="_blank">
+    Hosted Instance
   </a>
 </p>
 
@@ -67,7 +71,15 @@ This monorepo consists of three main sections:
 - `yarn setup` from the project root directory.
   - This will fill in the required `.env` files you'll need in each of the application sections. Go fill those out before proceeding or else things won't work right.
 - `cd frontend && yarn install && cd ../server && yarn install` from the project root directory.
+
+To boot the server locally (run commands from root of repo):
+- ensure `server/.env.development` is set and filled out.
+`yarn dev:server`
  
+To boot the frontend locally (run commands from root of repo):
+- ensure `frontend/.env` is set and filled out.
+- ensure `VITE_API_BASE="http://localhost:3001/api"`
+`yarn dev:frontend`
 
 Next, you will need some content to embed. This could be a Youtube Channel, Medium articles, local text files, word documents, and the list goes on. This is where you will use the `collector/` part of the repo.
 
@@ -77,7 +89,30 @@ Next, you will need some content to embed. This could be a Youtube Channel, Medi
 
 [Learn about vector caching](./server/storage/vector-cache/VECTOR_CACHE.md)
 
-### Contributing
+## Contributing
 - create issue
 - create PR with branch name format of `<issue number>-<short name>`
 - yee haw let's merge
+
+## Telemetry
+AnythingLLM by Mintplex Labs Inc contains a telemetry feature that collects anonymous usage information.
+
+### Why?
+We use this information to help us understand how AnythingLLM is used, to help us prioritize work on new features and bug fixes, and to help us improve AnythingLLM's performance and stability.
+
+### Opting out
+Set `DISABLE_TELEMETRY` in your server or docker .env settings to "true" to opt out of telemetry.
+
+```
+DISABLE_TELEMETRY="true"
+```
+
+### What do you explicitly track?
+We will only track usage details that help us make product and roadmap decisions, specifically:
+- Version of your installation
+- When a document is added or removed. No information _about_ the document. Just that the event occurred. This gives us an idea of use.
+- Type of vector database in use. Let's us know which vector database provider is the most used to prioritize changes when updates arrive for that provider.
+- Type of LLM in use. Let's us know the most popular choice and prioritize changes when updates arrive for that provider.
+- Chat is sent. This is the most regular "event" and gives us an idea of the daily-activity of this project across all installations. Again, only the event is sent - we have no information on the nature or content of the chat itself.
+
+You can verify these claims by finding all locations `Telemetry.sendTelemetry` is called. Additionally these events are written to the output log so you can also see the specific data which was sent - if enabled. No IP or other identifying information is collected. The Telemetry provider is [PostHog](https://posthog.com/) - an open-source telemetry collection service.

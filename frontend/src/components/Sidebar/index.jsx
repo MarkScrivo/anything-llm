@@ -1,19 +1,18 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
+  AtSign,
   BookOpen,
-  Briefcase,
-  Cpu,
   GitHub,
+  LogOut,
   Menu,
+  Package,
   Plus,
   Shield,
   Tool,
+  X,
 } from "react-feather";
 import IndexCount from "./IndexCount";
 import LLMStatus from "./LLMStatus";
-import SystemSettingsModal, {
-  useSystemSettingsModal,
-} from "../Modals/Settings";
 import NewWorkspaceModal, {
   useNewWorkspaceModal,
 } from "../Modals/NewWorkspace";
@@ -21,14 +20,15 @@ import ActiveWorkspaces from "./ActiveWorkspaces";
 import paths from "../../utils/paths";
 import Discord from "../Icons/Discord";
 import useUser from "../../hooks/useUser";
+import { userFromStorage } from "../../utils/request";
+import { AUTH_TOKEN, AUTH_USER } from "../../utils/constants";
+import useLogo from "../../hooks/useLogo";
+import SettingsOverlay, { useSystemSettingsOverlay } from "./SettingsOverlay";
 
 export default function Sidebar() {
+  const { logo } = useLogo();
   const sidebarRef = useRef(null);
-  const {
-    showing: showingSystemSettingsModal,
-    showModal: showSystemSettingsModal,
-    hideModal: hideSystemSettingsModal,
-  } = useSystemSettingsModal();
+  const { showOverlay } = useSystemSettingsOverlay();
   const {
     showing: showingNewWsModal,
     showModal: showNewWsModal,
@@ -40,22 +40,23 @@ export default function Sidebar() {
       <div
         ref={sidebarRef}
         style={{ height: "calc(100% - 32px)" }}
-        className="transition-all duration-500 relative m-[16px] rounded-[26px] bg-white dark:bg-black-900 min-w-[15.5%] p-[18px] "
+        className="relative transition-all duration-500 relative m-[16px] rounded-[26px] bg-white dark:bg-black-900 min-w-[15.5%] p-[18px] "
       >
+        <SettingsOverlay />
         <div className="w-full h-full flex flex-col overflow-x-hidden items-between">
           {/* Header Information */}
           <div className="flex w-full items-center justify-between">
-            <p className="text-xl font-base text-slate-600 dark:text-slate-200">
-              AnythingLLM
-            </p>
+            <div className="flex shrink-0 max-w-[50%] items-center justify-start">
+              <img
+                src={logo}
+                alt="Logo"
+                className="rounded max-h-[40px]"
+                style={{ objectFit: "contain" }}
+              />
+            </div>
             <div className="flex gap-x-2 items-center text-slate-500">
               <AdminHome />
-              <button
-                onClick={showSystemSettingsModal}
-                className="transition-all duration-300 p-2 rounded-full bg-slate-200 text-slate-400 dark:bg-stone-800 hover:bg-slate-800 hover:text-slate-200 dark:hover:text-slate-200"
-              >
-                <Tool className="h-4 w-4 " />
-              </button>
+              <SettingsButton onClick={showOverlay} />
             </div>
           </div>
 
@@ -84,25 +85,17 @@ export default function Sidebar() {
                   <IndexCount />
                 </div>
                 <a
-                  href={paths.hosting()}
+                  href={paths.feedback()}
                   target="_blank"
                   className="flex flex-grow w-[100%] h-[36px] gap-x-2 py-[5px] px-4 border border-slate-400 dark:border-transparent rounded-lg text-slate-800 dark:text-slate-200 justify-center items-center hover:bg-slate-100 dark:bg-stone-800 dark:hover:bg-stone-900"
                 >
-                  <Cpu className="h-4 w-4" />
+                  <AtSign className="h-4 w-4" />
                   <p className="text-slate-800 dark:text-slate-200 text-xs leading-loose font-semibold">
-                    Managed cloud hosting
+                    Feedback form
                   </p>
                 </a>
-                <a
-                  href={paths.hosting()}
-                  target="_blank"
-                  className="flex flex-grow w-[100%] h-[36px] gap-x-2 py-[5px] px-4 border border-slate-400 dark:border-transparent rounded-lg text-slate-800 dark:text-slate-200 justify-center items-center hover:bg-slate-100  dark:bg-stone-800 dark:hover:bg-stone-900"
-                >
-                  <Briefcase className="h-4 w-4" />
-                  <p className="text-slate-800 dark:text-slate-200 text-xs leading-loose font-semibold">
-                    Enterprise Installation
-                  </p>
-                </a>
+                <ManagedHosting />
+                <LogoutButton />
               </div>
 
               {/* Footer */}
@@ -138,23 +131,17 @@ export default function Sidebar() {
           </div>
         </div>
       </div>
-      {showingSystemSettingsModal && (
-        <SystemSettingsModal hideModal={hideSystemSettingsModal} />
-      )}
       {showingNewWsModal && <NewWorkspaceModal hideModal={hideNewWsModal} />}
     </>
   );
 }
 
 export function SidebarMobileHeader() {
+  const { logo } = useLogo();
   const sidebarRef = useRef(null);
   const [showSidebar, setShowSidebar] = useState(false);
   const [showBgOverlay, setShowBgOverlay] = useState(false);
-  const {
-    showing: showingSystemSettingsModal,
-    showModal: showSystemSettingsModal,
-    hideModal: hideSystemSettingsModal,
-  } = useSystemSettingsModal();
+  const { showOverlay } = useSystemSettingsOverlay();
   const {
     showing: showingNewWsModal,
     showModal: showNewWsModal,
@@ -162,6 +149,8 @@ export function SidebarMobileHeader() {
   } = useNewWorkspaceModal();
 
   useEffect(() => {
+    // Darkens the rest of the screen
+    // when sidebar is open.
     function handleBg() {
       if (showSidebar) {
         setTimeout(() => {
@@ -183,9 +172,14 @@ export function SidebarMobileHeader() {
         >
           <Menu className="h-6 w-6" />
         </button>
-        <p className="text-xl font-base text-slate-600 dark:text-slate-200">
-          AnythingLLM
-        </p>
+        <div className="flex shrink-0 w-fit items-center justify-start">
+          <img
+            src={logo}
+            alt="Logo"
+            className="rounded w-full max-h-[40px]"
+            style={{ objectFit: "contain" }}
+          />
+        </div>
       </div>
       <div
         style={{
@@ -203,22 +197,23 @@ export function SidebarMobileHeader() {
         />
         <div
           ref={sidebarRef}
-          className="h-[100vh] fixed top-0 left-0  rounded-r-[26px] bg-white dark:bg-black-900 w-[70%] p-[18px] "
+          className="relative h-[100vh] fixed top-0 left-0  rounded-r-[26px] bg-white dark:bg-black-900 w-[80%] p-[18px] "
         >
+          <SettingsOverlay />
           <div className="w-full h-full flex flex-col overflow-x-hidden items-between">
             {/* Header Information */}
-            <div className="flex w-full items-center justify-between">
-              <p className="text-xl font-base text-slate-600 dark:text-slate-200">
-                AnythingLLM
-              </p>
-              <div className="flex gap-x-2 items-center text-slate-500">
+            <div className="flex w-full items-center justify-between gap-x-4">
+              <div className="flex shrink-1 w-fit items-center justify-start">
+                <img
+                  src={logo}
+                  alt="Logo"
+                  className="rounded w-full max-h-[40px]"
+                  style={{ objectFit: "contain" }}
+                />
+              </div>
+              <div className="flex gap-x-2 items-center text-slate-500 shink-0">
                 <AdminHome />
-                <button
-                  onClick={showSystemSettingsModal}
-                  className="transition-all duration-300 p-2 rounded-full bg-slate-200 text-slate-400 dark:bg-stone-800 hover:bg-slate-800 hover:text-slate-200 dark:hover:text-slate-200"
-                >
-                  <Tool className="h-4 w-4 " />
-                </button>
+                <SettingsButton onClick={showOverlay} />
               </div>
             </div>
 
@@ -250,25 +245,17 @@ export function SidebarMobileHeader() {
                     <IndexCount />
                   </div>
                   <a
-                    href={paths.hosting()}
+                    href={paths.feedback()}
                     target="_blank"
                     className="flex flex-grow w-[100%] h-[36px] gap-x-2 py-[5px] px-4 border border-slate-400 dark:border-transparent rounded-lg text-slate-800 dark:text-slate-200 justify-center items-center hover:bg-slate-100 dark:bg-stone-800 dark:hover:bg-stone-900"
                   >
-                    <Cpu className="h-4 w-4" />
+                    <AtSign className="h-4 w-4" />
                     <p className="text-slate-800 dark:text-slate-200 text-xs leading-loose font-semibold">
-                      Managed cloud hosting
+                      Feedback form
                     </p>
                   </a>
-                  <a
-                    href={paths.hosting()}
-                    target="_blank"
-                    className="flex flex-grow w-[100%] h-[36px] gap-x-2 py-[5px] px-4 border border-slate-400 dark:border-transparent rounded-lg text-slate-800 dark:text-slate-200 justify-center items-center hover:bg-slate-100  dark:bg-stone-800 dark:hover:bg-stone-900"
-                  >
-                    <Briefcase className="h-4 w-4" />
-                    <p className="text-slate-800 dark:text-slate-200 text-xs leading-loose font-semibold">
-                      Enterprise Installation
-                    </p>
-                  </a>
+                  <ManagedHosting />
+                  <LogoutButton />
                 </div>
 
                 {/* Footer */}
@@ -304,9 +291,6 @@ export function SidebarMobileHeader() {
             </div>
           </div>
         </div>
-        {showingSystemSettingsModal && (
-          <SystemSettingsModal hideModal={hideSystemSettingsModal} />
-        )}
         {showingNewWsModal && <NewWorkspaceModal hideModal={hideNewWsModal} />}
       </div>
     </>
@@ -322,6 +306,57 @@ function AdminHome() {
       className="transition-all duration-300 p-2 rounded-full bg-slate-200 text-slate-400 dark:bg-stone-800 hover:bg-slate-800 hover:text-slate-200 dark:hover:text-slate-200"
     >
       <Shield className="h-4 w-4" />
+    </a>
+  );
+}
+
+function LogoutButton() {
+  if (!window.localStorage.getItem(AUTH_USER)) return null;
+  const user = userFromStorage();
+  if (!user.username) return null;
+
+  return (
+    <button
+      onClick={() => {
+        window.localStorage.removeItem(AUTH_USER);
+        window.localStorage.removeItem(AUTH_TOKEN);
+        window.location.replace(paths.home());
+      }}
+      className="flex flex-grow w-[100%] h-[36px] gap-x-2 py-[5px] px-4 border border-slate-400 dark:border-transparent rounded-lg text-slate-800 dark:text-slate-200 justify-center items-center hover:bg-slate-100 dark:bg-stone-800 dark:hover:bg-stone-900"
+    >
+      <LogOut className="h-4 w-4" />
+      <p className="text-slate-800 dark:text-slate-200 text-xs leading-loose font-semibold">
+        Log out of {user.username}
+      </p>
+    </button>
+  );
+}
+
+function SettingsButton({ onClick }) {
+  const { user } = useUser();
+  if (!!user) return null;
+  return (
+    <button
+      onClick={onClick}
+      className="transition-all duration-300 p-2 rounded-full bg-slate-200 text-slate-400 dark:bg-stone-800 hover:bg-slate-800 hover:text-slate-200 dark:hover:text-slate-200"
+    >
+      <Tool className="h-4 w-4 " />
+    </button>
+  );
+}
+
+function ManagedHosting() {
+  if (window.location.origin.includes(".useanything.com")) return null;
+  return (
+    <a
+      href={paths.hosting()}
+      target="_blank"
+      className="flex flex-grow w-[100%] h-[36px] gap-x-2 py-[5px] px-4 border border-slate-400 dark:border-transparent rounded-lg text-slate-800 dark:text-slate-200 justify-center items-center hover:bg-slate-100 dark:bg-stone-800 dark:hover:bg-stone-900"
+    >
+      <Package className="h-4 w-4" />
+      <p className="text-slate-800 dark:text-slate-200 text-xs leading-loose font-semibold">
+        Managed cloud hosting
+      </p>
     </a>
   );
 }

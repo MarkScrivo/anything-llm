@@ -1,4 +1,9 @@
 const KEY_MAPPING = {
+  LLMProvider: {
+    envKey: "LLM_PROVIDER",
+    checks: [isNotEmpty, supportedLLM],
+  },
+  // OpenAI Settings
   OpenAiKey: {
     envKey: "OPEN_AI_KEY",
     checks: [isNotEmpty, validOpenAIKey],
@@ -7,6 +12,25 @@ const KEY_MAPPING = {
     envKey: "OPEN_MODEL_PREF",
     checks: [isNotEmpty, validOpenAIModel],
   },
+  // Azure OpenAI Settings
+  AzureOpenAiEndpoint: {
+    envKey: "AZURE_OPENAI_ENDPOINT",
+    checks: [isNotEmpty, validAzureURL],
+  },
+  AzureOpenAiKey: {
+    envKey: "AZURE_OPENAI_KEY",
+    checks: [isNotEmpty],
+  },
+  AzureOpenAiModelPref: {
+    envKey: "OPEN_MODEL_PREF",
+    checks: [isNotEmpty],
+  },
+  AzureOpenAiEmbeddingModelPref: {
+    envKey: "EMBEDDING_MODEL_PREF",
+    checks: [isNotEmpty],
+  },
+
+  // Vector Database Selection Settings
   VectorDB: {
     envKey: "VECTOR_DB",
     checks: [isNotEmpty, supportedVectorDB],
@@ -15,6 +39,23 @@ const KEY_MAPPING = {
     envKey: "CHROMA_ENDPOINT",
     checks: [isValidURL, validChromaURL],
   },
+  WeaviateEndpoint: {
+    envKey: "WEAVIATE_ENDPOINT",
+    checks: [isValidURL],
+  },
+  WeaviateApiKey: {
+    envKey: "WEAVIATE_API_KEY",
+    checks: [],
+  },
+  QdrantEndpoint: {
+    envKey: "QDRANT_ENDPOINT",
+    checks: [isValidURL],
+  },
+  QdrantApiKey: {
+    envKey: "QDRANT_API_KEY",
+    checks: [],
+  },
+
   PineConeEnvironment: {
     envKey: "PINECONE_ENVIRONMENT",
     checks: [],
@@ -27,6 +68,8 @@ const KEY_MAPPING = {
     envKey: "PINECONE_INDEX",
     checks: [],
   },
+
+  // System Settings
   AuthToken: {
     envKey: "AUTH_TOKEN",
     checks: [],
@@ -56,6 +99,10 @@ function validOpenAIKey(input = "") {
   return input.startsWith("sk-") ? null : "OpenAI Key must start with sk-";
 }
 
+function supportedLLM(input = "") {
+  return ["openai", "azure"].includes(input);
+}
+
 function validOpenAIModel(input = "") {
   const validModels = [
     "gpt-4",
@@ -73,7 +120,7 @@ function validOpenAIModel(input = "") {
 }
 
 function supportedVectorDB(input = "") {
-  const supported = ["chroma", "pinecone", "lancedb"];
+  const supported = ["chroma", "pinecone", "lancedb", "weaviate", "qdrant"];
   return supported.includes(input)
     ? null
     : `Invalid VectorDB type. Must be one of ${supported.join(", ")}.`;
@@ -85,6 +132,17 @@ function validChromaURL(input = "") {
     : null;
 }
 
+function validAzureURL(input = "") {
+  try {
+    new URL(input);
+    if (!input.includes("openai.azure.com"))
+      return "URL must include openai.azure.com";
+    return null;
+  } catch {
+    return "Not a valid URL";
+  }
+}
+
 // This will force update .env variables which for any which reason were not able to be parsed or
 // read from an ENV file as this seems to be a complicating step for many so allowing people to write
 // to the process will at least alleviate that issue. It does not perform comprehensive validity checks or sanity checks
@@ -92,8 +150,8 @@ function validChromaURL(input = "") {
 function updateENV(newENVs = {}) {
   let error = "";
   const validKeys = Object.keys(KEY_MAPPING);
-  const ENV_KEYS = Object.keys(newENVs).filter((key) =>
-    validKeys.includes(key)
+  const ENV_KEYS = Object.keys(newENVs).filter(
+    (key) => validKeys.includes(key) && !newENVs[key].includes("******") // strip out answers where the value is all asterisks
   );
   const newValues = {};
 
@@ -116,6 +174,37 @@ function updateENV(newENVs = {}) {
   return { newValues, error: error?.length > 0 ? error : false };
 }
 
+async function dumpENV() {
+  const fs = require("fs");
+  const path = require("path");
+
+  const frozenEnvs = {};
+  const protectedKeys = [
+    ...Object.values(KEY_MAPPING).map((values) => values.envKey),
+    "CACHE_VECTORS",
+    "STORAGE_DIR",
+    "SERVER_PORT",
+  ];
+
+  for (const key of protectedKeys) {
+    const envValue = process.env?.[key] || null;
+    if (!envValue) continue;
+    frozenEnvs[key] = process.env?.[key] || null;
+  }
+
+  var envResult = `# Auto-dump ENV from system call on ${new Date().toTimeString()}\n`;
+  envResult += Object.entries(frozenEnvs)
+    .map(([key, value]) => {
+      return `${key}='${value}'`;
+    })
+    .join("\n");
+
+  const envPath = path.join(__dirname, "../../.env");
+  fs.writeFileSync(envPath, envResult, { encoding: "utf8", flag: "w" });
+  return true;
+}
+
 module.exports = {
+  dumpENV,
   updateENV,
 };

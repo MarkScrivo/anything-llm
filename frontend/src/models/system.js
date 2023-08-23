@@ -4,7 +4,8 @@ import { baseHeaders } from "../utils/request";
 const System = {
   ping: async function () {
     return await fetch(`${API_BASE}/ping`)
-      .then((res) => res.ok)
+      .then((res) => res.json())
+      .then((res) => res?.online || false)
       .catch(() => false);
   },
   totalIndexes: async function () {
@@ -142,6 +143,78 @@ const System = {
     })
       .then((res) => res.json())
       .then((res) => res)
+      .catch((e) => {
+        console.error(e);
+        return { success: false, error: e.message };
+      });
+  },
+  uploadLogo: async function (formData) {
+    return await fetch(`${API_BASE}/system/upload-logo`, {
+      method: "POST",
+      body: formData,
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error("Error uploading logo.");
+        return { success: true, error: null };
+      })
+      .catch((e) => {
+        console.log(e);
+        return { success: false, error: e.message };
+      });
+  },
+  fetchLogo: async function (light = false) {
+    return await fetch(`${API_BASE}/system/logo${light ? "/light" : ""}`, {
+      method: "GET",
+      cache: "no-cache",
+    })
+      .then((res) => {
+        if (res.ok) return res.blob();
+        throw new Error("Failed to fetch logo!");
+      })
+      .then((blob) => URL.createObjectURL(blob))
+      .catch((e) => {
+        console.log(e);
+        return null;
+      });
+  },
+  removeCustomLogo: async function () {
+    return await fetch(`${API_BASE}/system/remove-logo`)
+      .then((res) => {
+        if (res.ok) return { success: true, error: null };
+        throw new Error("Error removing logo!");
+      })
+      .catch((e) => {
+        console.log(e);
+        return { success: false, error: e.message };
+      });
+  },
+  getWelcomeMessages: async function () {
+    return await fetch(`${API_BASE}/system/welcome-messages`, {
+      method: "GET",
+      cache: "no-cache",
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error("Could not fetch welcome messages.");
+        return res.json();
+      })
+      .then((res) => res.welcomeMessages)
+      .catch((e) => {
+        console.error(e);
+        return null;
+      });
+  },
+  setWelcomeMessages: async function (messages) {
+    return fetch(`${API_BASE}/system/set-welcome-messages`, {
+      method: "POST",
+      headers: baseHeaders(),
+      body: JSON.stringify({ messages }),
+    })
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error(res.statusText || "Error setting welcome messages.");
+        }
+        return { success: true, ...res.json() };
+      })
       .catch((e) => {
         console.error(e);
         return { success: false, error: e.message };
