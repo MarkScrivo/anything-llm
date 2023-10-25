@@ -1,4 +1,4 @@
-import { API_BASE } from "../utils/constants";
+import { API_BASE, AUTH_TIMESTAMP } from "../utils/constants";
 import { baseHeaders } from "../utils/request";
 
 const System = {
@@ -39,12 +39,22 @@ const System = {
       .then((res) => res.localFiles)
       .catch(() => null);
   },
+  needsAuthCheck: function () {
+    const lastAuthCheck = window.localStorage.getItem(AUTH_TIMESTAMP);
+    if (!lastAuthCheck) return true;
+    const expiresAtMs = Number(lastAuthCheck) + 60 * 5 * 1000; // expires in 5 minutes in ms
+    return Number(new Date()) > expiresAtMs;
+  },
+
   checkAuth: async function (currentToken = null) {
-    return await fetch(`${API_BASE}/system/check-token`, {
+    const valid = await fetch(`${API_BASE}/system/check-token`, {
       headers: baseHeaders(currentToken),
     })
       .then((res) => res.ok)
       .catch(() => false);
+
+    window.localStorage.setItem(AUTH_TIMESTAMP, Number(new Date()));
+    return valid;
   },
   requestToken: async function (body) {
     return await fetch(`${API_BASE}/request-token`, {
@@ -111,6 +121,18 @@ const System = {
         return { success: false, error: e.message };
       });
   },
+  isMultiUserMode: async () => {
+    return await fetch(`${API_BASE}/system/multi-user-mode`, {
+      method: "GET",
+      headers: baseHeaders(),
+    })
+      .then((res) => res.json())
+      .then((res) => res?.multiUserMode)
+      .catch((e) => {
+        console.error(e);
+        return false;
+      });
+  },
   deleteDocument: async (name, meta) => {
     return await fetch(`${API_BASE}/system/remove-document`, {
       method: "DELETE",
@@ -152,6 +174,7 @@ const System = {
     return await fetch(`${API_BASE}/system/upload-logo`, {
       method: "POST",
       body: formData,
+      headers: baseHeaders(),
     })
       .then((res) => {
         if (!res.ok) throw new Error("Error uploading logo.");
@@ -162,8 +185,8 @@ const System = {
         return { success: false, error: e.message };
       });
   },
-  fetchLogo: async function (light = false) {
-    return await fetch(`${API_BASE}/system/logo${light ? "/light" : ""}`, {
+  fetchLogo: async function () {
+    return await fetch(`${API_BASE}/system/logo`, {
       method: "GET",
       cache: "no-cache",
     })
@@ -177,8 +200,25 @@ const System = {
         return null;
       });
   },
+  isDefaultLogo: async function () {
+    return await fetch(`${API_BASE}/system/is-default-logo`, {
+      method: "GET",
+      cache: "no-cache",
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error("Failed to get is default logo!");
+        return res.json();
+      })
+      .then((res) => res?.isDefaultLogo)
+      .catch((e) => {
+        console.log(e);
+        return null;
+      });
+  },
   removeCustomLogo: async function () {
-    return await fetch(`${API_BASE}/system/remove-logo`)
+    return await fetch(`${API_BASE}/system/remove-logo`, {
+      headers: baseHeaders(),
+    })
       .then((res) => {
         if (res.ok) return { success: true, error: null };
         throw new Error("Error removing logo!");
@@ -186,6 +226,22 @@ const System = {
       .catch((e) => {
         console.log(e);
         return { success: false, error: e.message };
+      });
+  },
+  getCanDeleteWorkspaces: async function () {
+    return await fetch(`${API_BASE}/system/can-delete-workspaces`, {
+      method: "GET",
+      cache: "no-cache",
+      headers: baseHeaders(),
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error("Could not fetch can delete workspaces.");
+        return res.json();
+      })
+      .then((res) => res?.canDelete)
+      .catch((e) => {
+        console.error(e);
+        return false;
       });
   },
   getWelcomeMessages: async function () {
@@ -220,8 +276,8 @@ const System = {
         return { success: false, error: e.message };
       });
   },
-  getApiKey: async function () {
-    return fetch(`${API_BASE}/system/api-key`, {
+  getApiKeys: async function () {
+    return fetch(`${API_BASE}/system/api-keys`, {
       method: "GET",
       headers: baseHeaders(),
     })

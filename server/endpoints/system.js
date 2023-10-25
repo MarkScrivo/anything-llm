@@ -1,7 +1,6 @@
 process.env.NODE_ENV === "development"
   ? require("dotenv").config({ path: `.env.${process.env.NODE_ENV}` })
   : require("dotenv").config();
-const { validateTablePragmas } = require("../utils/database");
 const { viewLocalFiles } = require("../utils/files");
 const { exportData, unpackAndOverwriteImport } = require("../utils/files/data");
 const {
@@ -24,6 +23,7 @@ const { User } = require("../models/user");
 const { validatedRequest } = require("../utils/middleware/validatedRequest");
 const { handleImports } = setupDataImports();
 const { handleLogoUploads } = setupLogoUploads();
+const fs = require("fs");
 const path = require("path");
 const {
   getDefaultFilename,
@@ -32,7 +32,7 @@ const {
   validFilename,
   renameLogoFile,
   removeCustomLogo,
-  DARK_LOGO_FILENAME,
+  LOGO_FILENAME,
 } = require("../utils/files/logo");
 const { Telemetry } = require("../models/telemetry");
 const { WelcomeMessages } = require("../models/welcomeMessages");
@@ -46,7 +46,10 @@ function systemEndpoints(app) {
   });
 
   app.get("/migrate", async (_, response) => {
-    await validateTablePragmas(true);
+    const execSync = require("child_process").execSync;
+    execSync("npx prisma migrate deploy --schema=./prisma/schema.prisma", {
+      stdio: "inherit",
+    });
     response.sendStatus(200);
   });
 
@@ -95,7 +98,7 @@ function systemEndpoints(app) {
     try {
       if (await SystemSettings.isMultiUserMode()) {
         const { username, password } = reqBody(request);
-        const existingUser = await User.get(`username = '${username}'`);
+        const existingUser = await User.get({ username });
 
         if (!existingUser) {
           response.status(200).json({
@@ -164,7 +167,7 @@ function systemEndpoints(app) {
   app.get("/system/system-vectors", [validatedRequest], async (_, response) => {
     try {
       const VectorDb = getVectorDbClass();
-      const vectorCount = await VectorDb.totalIndicies();
+      const vectorCount = await VectorDb.totalVectors();
       response.status(200).json({ vectorCount });
     } catch (e) {
       console.log(e.message, e);
@@ -236,6 +239,16 @@ function systemEndpoints(app) {
     async (request, response) => {
       try {
         const body = reqBody(request);
+
+        // Only admins can update the ENV settings.
+        if (multiUserMode(response)) {
+          const user = await userFromSession(request, response);
+          if (!user || user?.role !== "admin") {
+            response.sendStatus(401).end();
+            return;
+          }
+        }
+
         const { newValues, error } = updateENV(body);
         if (process.env.NODE_ENV === "production") await dumpENV();
         response.status(200).json({ newValues, error });
@@ -251,11 +264,21 @@ function systemEndpoints(app) {
     [validatedRequest],
     async (request, response) => {
       try {
+        // Cannot update password in multi - user mode.
+        if (multiUserMode(response)) {
+          response.sendStatus(401).end();
+          return;
+        }
+
         const { usePassword, newPassword } = reqBody(request);
-        const { error } = updateENV({
-          AuthToken: usePassword ? newPassword : "",
-          JWTSecret: usePassword ? v4() : "",
-        });
+        const { error } = updateENV(
+          {
+            AuthToken: usePassword ? newPassword : "",
+            JWTSecret: usePassword ? v4() : "",
+          },
+          true
+        );
+        if (process.env.NODE_ENV === "production") await dumpENV();
         response.status(200).json({ success: !error, error });
       } catch (e) {
         console.log(e.message, e);
@@ -290,16 +313,38 @@ function systemEndpoints(app) {
           limit_user_messages: false,
           message_limit: 25,
         });
-        process.env.AUTH_TOKEN = null;
-        process.env.JWT_SECRET = process.env.JWT_SECRET ?? v4(); // Make sure JWT_SECRET is set for JWT issuance.
+
+        updateENV(
+          {
+            AuthToken: "",
+            JWTSecret: process.env.JWT_SECRET || v4(),
+          },
+          true
+        );
+        if (process.env.NODE_ENV === "production") await dumpENV();
         await Telemetry.sendTelemetry("enabled_multi_user_mode");
         response.status(200).json({ success: !!user, error });
       } catch (e) {
+        await User.delete({});
+        await SystemSettings.updateSettings({
+          multi_user_mode: false,
+        });
+
         console.log(e.message, e);
         response.sendStatus(500).end();
       }
     }
   );
+
+  app.get("/system/multi-user-mode", async (request, response) => {
+    try {
+      const multiUserMode = await SystemSettings.isMultiUserMode();
+      response.status(200).json({ multiUserMode });
+    } catch (e) {
+      console.log(e.message, e);
+      response.sendStatus(500).end();
+    }
+  });
 
   app.get("/system/data-export", [validatedRequest], async (_, response) => {
     try {
@@ -311,22 +356,32 @@ function systemEndpoints(app) {
     }
   });
 
-  app.get(
-    "/system/data-exports/:filename",
-    [validatedRequest],
-    (request, response) => {
-      const filePath =
-        __dirname + "/../storage/exports/" + request.params.filename;
-      response.download(filePath, request.params.filename, (err) => {
-        if (err) {
-          response.send({
-            error: err,
-            msg: "Problem downloading the file",
-          });
-        }
+  app.get("/system/data-exports/:filename", (request, response) => {
+    const exportLocation = __dirname + "/../storage/exports/";
+    const sanitized = path
+      .normalize(request.params.filename)
+      .replace(/^(\.\.(\/|\\|$))+/, "");
+    const finalDestination = path.join(exportLocation, sanitized);
+
+    if (!fs.existsSync(finalDestination)) {
+      response.status(404).json({
+        error: 404,
+        msg: `File ${request.params.filename} does not exist in exports.`,
       });
+      return;
     }
-  );
+
+    response.download(finalDestination, request.params.filename, (err) => {
+      if (err) {
+        response.send({
+          error: err,
+          msg: "Problem downloading the file",
+        });
+      }
+      // delete on download because endpoint is not authenticated.
+      fs.rmSync(finalDestination);
+    });
+  });
 
   app.post(
     "/system/data-import",
@@ -338,9 +393,9 @@ function systemEndpoints(app) {
     }
   );
 
-  app.get("/system/logo/:mode?", async function (request, response) {
+  app.get("/system/logo", async function (request, response) {
     try {
-      const defaultFilename = getDefaultFilename(request.params.mode);
+      const defaultFilename = getDefaultFilename();
       const logoPath = await determineLogoFilepath(defaultFilename);
       const { buffer, size, mime } = fetchLogo(logoPath);
       response.writeHead(200, {
@@ -401,6 +456,17 @@ function systemEndpoints(app) {
     }
   );
 
+  app.get("/system/is-default-logo", async (request, response) => {
+    try {
+      const currentLogoFilename = await SystemSettings.currentLogoFilename();
+      const isDefaultLogo = currentLogoFilename === LOGO_FILENAME;
+      response.status(200).json({ isDefaultLogo });
+    } catch (error) {
+      console.error("Error processing the logo request:", error);
+      response.status(500).json({ message: "Internal server error" });
+    }
+  });
+
   app.get(
     "/system/remove-logo",
     [validatedRequest],
@@ -416,7 +482,7 @@ function systemEndpoints(app) {
         const currentLogoFilename = await SystemSettings.currentLogoFilename();
         await removeCustomLogo(currentLogoFilename);
         const { success, error } = await SystemSettings.updateSettings({
-          logo_filename: DARK_LOGO_FILENAME,
+          logo_filename: LOGO_FILENAME,
         });
 
         return response.status(success ? 200 : 500).json({
@@ -427,6 +493,32 @@ function systemEndpoints(app) {
       } catch (error) {
         console.error("Error processing the logo removal:", error);
         response.status(500).json({ message: "Error removing the logo." });
+      }
+    }
+  );
+
+  app.get(
+    "/system/can-delete-workspaces",
+    [validatedRequest],
+    async function (request, response) {
+      try {
+        if (!response.locals.multiUserMode) {
+          return response.status(200).json({ canDelete: true });
+        }
+
+        if (response.locals.user?.role === "admin") {
+          return response.status(200).json({ canDelete: true });
+        }
+
+        const canDelete = await SystemSettings.canDeleteWorkspaces();
+        response.status(200).json({ canDelete });
+      } catch (error) {
+        console.error("Error fetching can delete workspaces:", error);
+        response.status(500).json({
+          success: false,
+          message: "Internal server error",
+          canDelete: false,
+        });
       }
     }
   );
@@ -478,15 +570,15 @@ function systemEndpoints(app) {
     }
   );
 
-  app.get("/system/api-key", [validatedRequest], async (_, response) => {
+  app.get("/system/api-keys", [validatedRequest], async (_, response) => {
     try {
       if (response.locals.multiUserMode) {
         return response.sendStatus(401).end();
       }
 
-      const apiKey = await ApiKey.get("id IS NOT NULL");
+      const apiKeys = await ApiKey.where({});
       return response.status(200).json({
-        apiKey,
+        apiKeys,
         error: null,
       });
     } catch (error) {
@@ -507,7 +599,6 @@ function systemEndpoints(app) {
           return response.sendStatus(401).end();
         }
 
-        await ApiKey.delete();
         const { apiKey, error } = await ApiKey.create();
         return response.status(200).json({
           apiKey,

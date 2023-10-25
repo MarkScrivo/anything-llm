@@ -3,25 +3,18 @@ import { default as WorkspaceChatContainer } from "../../components/WorkspaceCha
 import Sidebar from "../../components/Sidebar";
 import { useParams } from "react-router-dom";
 import Workspace from "../../models/workspace";
-import SidebarPlaceholder from "../../components/Sidebar/Placeholder";
-import ChatPlaceholder from "../../components/WorkspaceChat/LoadingChat";
 import PasswordModal, {
   usePasswordModal,
 } from "../../components/Modals/Password";
 import { isMobile } from "react-device-detect";
+import { FullScreenLoader } from "../../components/Preloader";
 
 export default function WorkspaceChat() {
-  const { requiresAuth, mode } = usePasswordModal();
-  if (requiresAuth === null || requiresAuth) {
-    return (
-      <>
-        {requiresAuth && <PasswordModal mode={mode} />}
-        <div className="w-screen h-screen overflow-hidden bg-orange-100 dark:bg-stone-700 flex">
-          {!isMobile && <SidebarPlaceholder />}
-          <ChatPlaceholder />
-        </div>
-      </>
-    );
+  const { loading, requiresAuth, mode } = usePasswordModal();
+
+  if (loading) return <FullScreenLoader />;
+  if (requiresAuth !== false) {
+    return <>{requiresAuth !== null && <PasswordModal mode={mode} />}</>;
   }
 
   return <ShowWorkspaceChat />;
@@ -43,7 +36,7 @@ function ShowWorkspaceChat() {
   }, []);
 
   return (
-    <div className="w-screen h-screen overflow-hidden bg-orange-100 dark:bg-stone-700 flex">
+    <div className="w-screen h-screen overflow-hidden bg-sidebar flex">
       {!isMobile && <Sidebar />}
       <WorkspaceChatContainer loading={loading} workspace={workspace} />
     </div>
