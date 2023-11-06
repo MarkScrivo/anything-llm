@@ -41,6 +41,7 @@ const Pinecone = {
     const result = {
       contextTexts: [],
       sourceDocuments: [],
+      scores: [],
     };
     const response = await index.query({
       queryRequest: {
@@ -54,6 +55,7 @@ const Pinecone = {
     response.matches.forEach((match) => {
       result.contextTexts.push(match.metadata.text);
       result.sourceDocuments.push(match);
+      result.scores.push(match.score);
     });
 
     return result;
@@ -148,8 +150,8 @@ const Pinecone = {
           documentVectors.push({ docId, vectorId: vectorRecord.id });
         }
       } else {
-        console.error(
-          "Could not use OpenAI to embed document chunks! This document will not be recorded."
+        throw new Error(
+          "Could not embed document chunks! This document will not be recorded."
         );
       }
 
@@ -240,18 +242,11 @@ const Pinecone = {
       namespace,
       queryVector
     );
-    const prompt = {
-      role: "system",
-      content: `${chatPrompt(workspace)}
-     Context:
-     ${contextTexts
-       .map((text, i) => {
-         return `[CONTEXT ${i}]:\n${text}\n[END CONTEXT ${i}]\n\n`;
-       })
-       .join("")}`,
-    };
-
-    const memory = [prompt, { role: "user", content: input }];
+    const memory = LLMConnector.constructPrompt({
+      systemPrompt: chatPrompt(workspace),
+      contextTexts: contextTexts,
+      userPrompt: input,
+    });
     const responseText = await LLMConnector.getChatCompletion(memory, {
       temperature: workspace?.openAiTemp ?? 0.7,
     });
@@ -288,18 +283,12 @@ const Pinecone = {
       namespace,
       queryVector
     );
-    const prompt = {
-      role: "system",
-      content: `${chatPrompt(workspace)}
-    Context:
-    ${contextTexts
-      .map((text, i) => {
-        return `[CONTEXT ${i}]:\n${text}\n[END CONTEXT ${i}]\n\n`;
-      })
-      .join("")}`,
-    };
-
-    const memory = [prompt, ...chatHistory, { role: "user", content: input }];
+    const memory = LLMConnector.constructPrompt({
+      systemPrompt: chatPrompt(workspace),
+      contextTexts: contextTexts,
+      userPrompt: input,
+      chatHistory,
+    });
     const responseText = await LLMConnector.getChatCompletion(memory, {
       temperature: workspace?.openAiTemp ?? 0.7,
     });

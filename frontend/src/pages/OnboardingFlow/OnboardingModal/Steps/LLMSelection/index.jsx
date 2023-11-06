@@ -1,13 +1,15 @@
 import React, { memo, useEffect, useState } from "react";
-
 import OpenAiLogo from "../../../../../media/llmprovider/openai.png";
 import AzureOpenAiLogo from "../../../../../media/llmprovider/azure.png";
 import AnthropicLogo from "../../../../../media/llmprovider/anthropic.png";
 import System from "../../../../../models/system";
 import PreLoader from "../../../../../components/Preloader";
-import LLMProviderOption from "../../../../../components/LLMProviderOption";
+import LLMProviderOption from "../../../../../components/LLMSelection/LLMProviderOption";
+import OpenAiOptions from "../../../../../components/LLMSelection/OpenAiOptions";
+import AzureAiOptions from "../../../../../components/LLMSelection/AzureAiOptions";
+import AnthropicAiOptions from "../../../../../components/LLMSelection/AnthropicAiOptions";
 
-function LLMSelection({ nextStep, prevStep, currentStep }) {
+function LLMSelection({ nextStep, prevStep, currentStep, goToStep }) {
   const [llmChoice, setLLMChoice] = useState("openai");
   const [settings, setSettings] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -40,7 +42,13 @@ function LLMSelection({ nextStep, prevStep, currentStep }) {
       alert(`Failed to save LLM settings: ${error}`, "error");
       return;
     }
-    nextStep();
+
+    switch (data.LLMProvider) {
+      case "anthropic":
+        goToStep(7);
+      default:
+        nextStep();
+    }
     return;
   };
 
@@ -59,7 +67,7 @@ function LLMSelection({ nextStep, prevStep, currentStep }) {
             LLM Providers
           </div>
           <div className="w-full flex md:flex-wrap overflow-x-scroll gap-4 max-w-[900px]">
-            <input hidden={true} name="LLMProvider" defaultValue={llmChoice} />
+            <input hidden={true} name="LLMProvider" value={llmChoice} />
             <LLMProviderOption
               name="OpenAI"
               value="openai"
@@ -80,131 +88,19 @@ function LLMSelection({ nextStep, prevStep, currentStep }) {
             />
             <LLMProviderOption
               name="Anthropic Claude 2"
-              value="anthropic-claude-2"
+              value="anthropic"
               link="anthropic.com"
-              description="[COMING SOON] A friendly AI Assistant hosted by Anthropic. Provides chat services only!"
-              checked={llmChoice === "anthropic-claude-2"}
+              description="A friendly AI Assistant hosted by Anthropic. Provides chat services only!"
+              checked={llmChoice === "anthropic"}
               image={AnthropicLogo}
+              onClick={updateLLMChoice}
             />
           </div>
           <div className="mt-10 flex flex-wrap gap-4 max-w-[800px]">
-            {llmChoice === "openai" && (
-              <>
-                <div className="flex flex-col w-60">
-                  <label className="text-white text-sm font-semibold block mb-4">
-                    API Key
-                  </label>
-                  <input
-                    type="password"
-                    name="OpenAiKey"
-                    className="bg-zinc-900 text-white placeholder-white placeholder-opacity-60 text-sm rounded-lg focus:border-white block w-full p-2.5"
-                    placeholder="OpenAI API Key"
-                    defaultValue={settings?.OpenAiKey ? "*".repeat(20) : ""}
-                    required={true}
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                </div>
-
-                <div className="flex flex-col w-60">
-                  <label className="text-white text-sm font-semibold block mb-4">
-                    Chat Model Selection
-                  </label>
-                  <select
-                    name="OpenAiModelPref"
-                    defaultValue={settings?.OpenAiModelPref}
-                    required={true}
-                    className="bg-zinc-900 border border-gray-500 text-white text-sm rounded-lg block w-full p-2.5"
-                  >
-                    {["gpt-3.5-turbo", "gpt-4"].map((model) => {
-                      return (
-                        <option key={model} value={model}>
-                          {model}
-                        </option>
-                      );
-                    })}
-                  </select>
-                </div>
-              </>
-            )}
-
-            {llmChoice === "azure" && (
-              <>
-                <div className="flex flex-col w-60">
-                  <label className="text-white text-sm font-semibold block mb-4">
-                    Azure Service Endpoint
-                  </label>
-                  <input
-                    type="url"
-                    name="AzureOpenAiEndpoint"
-                    className="bg-zinc-900 text-white placeholder-white placeholder-opacity-60 text-sm rounded-lg focus:border-white block w-full p-2.5"
-                    placeholder="https://my-azure.openai.azure.com"
-                    defaultValue={settings?.AzureOpenAiEndpoint}
-                    required={true}
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                </div>
-
-                <div className="flex flex-col w-60">
-                  <label className="text-white text-sm font-semibold block mb-4">
-                    API Key
-                  </label>
-                  <input
-                    type="password"
-                    name="AzureOpenAiKey"
-                    className="bg-zinc-900 text-white placeholder-white placeholder-opacity-60 text-sm rounded-lg focus:border-white block w-full p-2.5"
-                    placeholder="Azure OpenAI API Key"
-                    defaultValue={
-                      settings?.AzureOpenAiKey ? "*".repeat(20) : ""
-                    }
-                    required={true}
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                </div>
-
-                <div className="flex flex-col w-60">
-                  <label className="text-white text-sm font-semibold block mb-4">
-                    Chat Model Deployment Name
-                  </label>
-                  <input
-                    type="text"
-                    name="AzureOpenAiModelPref"
-                    className="bg-zinc-900 text-white placeholder-white placeholder-opacity-60 text-sm rounded-lg focus:border-white block w-full p-2.5"
-                    placeholder="Azure OpenAI chat model deployment name"
-                    defaultValue={settings?.AzureOpenAiModelPref}
-                    required={true}
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                </div>
-
-                <div className="flex flex-col w-60">
-                  <label className="text-white text-sm font-semibold block mb-4">
-                    Embedding Model Deployment Name
-                  </label>
-                  <input
-                    type="text"
-                    name="AzureOpenAiEmbeddingModelPref"
-                    className="bg-zinc-900 text-white placeholder-white placeholder-opacity-60 text-sm rounded-lg focus:border-white block w-full p-2.5"
-                    placeholder="Azure OpenAI embedding model deployment name"
-                    defaultValue={settings?.AzureOpenAiEmbeddingModelPref}
-                    required={true}
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                </div>
-              </>
-            )}
-
-            {llmChoice === "anthropic-claude-2" && (
-              <div className="w-full h-40 items-center justify-center flex">
-                <p className="text-gray-800 dark:text-slate-400">
-                  This provider is unavailable and cannot be used in AnythingLLM
-                  currently.
-                </p>
-              </div>
+            {llmChoice === "openai" && <OpenAiOptions settings={settings} />}
+            {llmChoice === "azure" && <AzureAiOptions settings={settings} />}
+            {llmChoice === "anthropic" && (
+              <AnthropicAiOptions settings={settings} />
             )}
           </div>
         </div>

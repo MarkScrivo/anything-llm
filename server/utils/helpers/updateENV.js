@@ -10,7 +10,7 @@ const KEY_MAPPING = {
   },
   OpenAiModelPref: {
     envKey: "OPEN_MODEL_PREF",
-    checks: [isNotEmpty, validOpenAIModel],
+    checks: [isNotEmpty],
   },
   // Azure OpenAI Settings
   AzureOpenAiEndpoint: {
@@ -28,6 +28,21 @@ const KEY_MAPPING = {
   AzureOpenAiEmbeddingModelPref: {
     envKey: "EMBEDDING_MODEL_PREF",
     checks: [isNotEmpty],
+  },
+
+  // Anthropic Settings
+  AnthropicApiKey: {
+    envKey: "ANTHROPIC_API_KEY",
+    checks: [isNotEmpty, validAnthropicApiKey],
+  },
+  AnthropicModelPref: {
+    envKey: "ANTHROPIC_MODEL_PREF",
+    checks: [isNotEmpty, validAnthropicModel],
+  },
+
+  EmbeddingEngine: {
+    envKey: "EMBEDDING_ENGINE",
+    checks: [supportedEmbeddingModel],
   },
 
   // Vector Database Selection Settings
@@ -92,8 +107,6 @@ const KEY_MAPPING = {
     envKey: "JWT_SECRET",
     checks: [requiresForceMode],
   },
-  // Not supported yet.
-  // 'StorageDir': 'STORAGE_DIR',
 };
 
 function isNotEmpty(input = "") {
@@ -113,15 +126,28 @@ function validOpenAIKey(input = "") {
   return input.startsWith("sk-") ? null : "OpenAI Key must start with sk-";
 }
 
-function supportedLLM(input = "") {
-  return ["openai", "azure"].includes(input);
+function validAnthropicApiKey(input = "") {
+  return input.startsWith("sk-ant-")
+    ? null
+    : "Anthropic Key must start with sk-ant-";
 }
 
-function validOpenAIModel(input = "") {
-  const validModels = ["gpt-4", "gpt-3.5-turbo"];
+function supportedLLM(input = "") {
+  return ["openai", "azure", "anthropic"].includes(input);
+}
+
+function validAnthropicModel(input = "") {
+  const validModels = ["claude-2"];
   return validModels.includes(input)
     ? null
     : `Invalid Model type. Must be one of ${validModels.join(", ")}.`;
+}
+
+function supportedEmbeddingModel(input = "") {
+  const supported = ["openai", "azure"];
+  return supported.includes(input)
+    ? null
+    : `Invalid Embedding model type. Must be one of ${supported.join(", ")}.`;
 }
 
 function supportedVectorDB(input = "") {

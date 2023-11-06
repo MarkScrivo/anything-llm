@@ -77,6 +77,7 @@ const Weaviate = {
     const result = {
       contextTexts: [],
       sourceDocuments: [],
+      scores: [],
     };
 
     const weaviateClass = await this.namespace(client, namespace);
@@ -84,7 +85,7 @@ const Weaviate = {
     const queryResponse = await client.graphql
       .get()
       .withClassName(camelCase(namespace))
-      .withFields(`${fields} _additional { id }`)
+      .withFields(`${fields} _additional { id certainty }`)
       .withNearVector({ vector: queryVector })
       .withLimit(4)
       .do();
@@ -94,11 +95,12 @@ const Weaviate = {
       // In Weaviate we have to pluck id from _additional and spread it into the rest
       // of the properties.
       const {
-        _additional: { id },
+        _additional: { id, certainty },
         ...rest
       } = response;
       result.contextTexts.push(rest.text);
       result.sourceDocuments.push({ ...rest, id });
+      result.scores.push(certainty);
     });
 
     return result;
@@ -267,8 +269,8 @@ const Weaviate = {
           documentVectors.push({ docId, vectorId: vectorRecord.id });
         }
       } else {
-        console.error(
-          "Could not use OpenAI to embed document chunks! This document will not be recorded."
+        throw new Error(
+          "Could not embed document chunks! This document will not be recorded."
         );
       }
 
@@ -351,18 +353,11 @@ const Weaviate = {
       namespace,
       queryVector
     );
-
-    const prompt = {
-      role: "system",
-      content: `${chatPrompt(workspace)}
-    Context:
-    ${contextTexts
-      .map((text, i) => {
-        return `[CONTEXT ${i}]:\n${text}\n[END CONTEXT ${i}]\n\n`;
-      })
-      .join("")}`,
-    };
-    const memory = [prompt, { role: "user", content: input }];
+    const memory = LLMConnector.constructPrompt({
+      systemPrompt: chatPrompt(workspace),
+      contextTexts: contextTexts,
+      userPrompt: input,
+    });
     const responseText = await LLMConnector.getChatCompletion(memory, {
       temperature: workspace?.openAiTemp ?? 0.7,
     });
@@ -402,17 +397,12 @@ const Weaviate = {
       namespace,
       queryVector
     );
-    const prompt = {
-      role: "system",
-      content: `${chatPrompt(workspace)}
-    Context:
-    ${contextTexts
-      .map((text, i) => {
-        return `[CONTEXT ${i}]:\n${text}\n[END CONTEXT ${i}]\n\n`;
-      })
-      .join("")}`,
-    };
-    const memory = [prompt, ...chatHistory, { role: "user", content: input }];
+    const memory = LLMConnector.constructPrompt({
+      systemPrompt: chatPrompt(workspace),
+      contextTexts: contextTexts,
+      userPrompt: input,
+      chatHistory,
+    });
     const responseText = await LLMConnector.getChatCompletion(memory, {
       temperature: workspace?.openAiTemp ?? 0.7,
     });

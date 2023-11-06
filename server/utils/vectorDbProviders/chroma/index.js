@@ -49,6 +49,12 @@ const Chroma = {
     }
     return totalVectors;
   },
+  distanceToSimilarity: function (distance = null) {
+    if (distance === null || typeof distance !== "number") return 0.0;
+    if (distance >= 1.0) return 1;
+    if (distance <= 0) return 0;
+    return 1 - distance;
+  },
   namespaceCount: async function (_namespace = null) {
     const { client } = await this.connect();
     const namespace = await this.namespace(client, _namespace);
@@ -59,6 +65,7 @@ const Chroma = {
     const result = {
       contextTexts: [],
       sourceDocuments: [],
+      scores: [],
     };
 
     const response = await collection.query({
@@ -68,6 +75,7 @@ const Chroma = {
     response.ids[0].forEach((_, i) => {
       result.contextTexts.push(response.documents[0][i]);
       result.sourceDocuments.push(response.metadatas[0][i]);
+      result.scores.push(this.distanceToSimilarity(response.distances[0][i]));
     });
 
     return result;
@@ -195,8 +203,8 @@ const Chroma = {
           documentVectors.push({ docId, vectorId: vectorRecord.id });
         }
       } else {
-        console.error(
-          "Could not use OpenAI to embed document chunks! This document will not be recorded."
+        throw new Error(
+          "Could not embed document chunks! This document will not be recorded."
         );
       }
 
@@ -265,17 +273,11 @@ const Chroma = {
       namespace,
       queryVector
     );
-    const prompt = {
-      role: "system",
-      content: `${chatPrompt(workspace)}
-    Context:
-    ${contextTexts
-      .map((text, i) => {
-        return `[CONTEXT ${i}]:\n${text}\n[END CONTEXT ${i}]\n\n`;
-      })
-      .join("")}`,
-    };
-    const memory = [prompt, { role: "user", content: input }];
+    const memory = LLMConnector.constructPrompt({
+      systemPrompt: chatPrompt(workspace),
+      contextTexts: contextTexts,
+      userPrompt: input,
+    });
     const responseText = await LLMConnector.getChatCompletion(memory, {
       temperature: workspace?.openAiTemp ?? 0.7,
     });
@@ -320,17 +322,12 @@ const Chroma = {
       namespace,
       queryVector
     );
-    const prompt = {
-      role: "system",
-      content: `${chatPrompt(workspace)}
-    Context:
-    ${contextTexts
-      .map((text, i) => {
-        return `[CONTEXT ${i}]:\n${text}\n[END CONTEXT ${i}]\n\n`;
-      })
-      .join("")}`,
-    };
-    const memory = [prompt, ...chatHistory, { role: "user", content: input }];
+    const memory = LLMConnector.constructPrompt({
+      systemPrompt: chatPrompt(workspace),
+      contextTexts: contextTexts,
+      userPrompt: input,
+      chatHistory,
+    });
     const responseText = await LLMConnector.getChatCompletion(memory, {
       temperature: workspace?.openAiTemp ?? 0.7,
     });

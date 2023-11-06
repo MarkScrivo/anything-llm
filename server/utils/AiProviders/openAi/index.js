@@ -1,16 +1,46 @@
-class OpenAi {
+const { OpenAiEmbedder } = require("../../EmbeddingEngines/openAi");
+
+class OpenAiLLM extends OpenAiEmbedder {
   constructor() {
+    super();
     const { Configuration, OpenAIApi } = require("openai");
+    if (!process.env.OPEN_AI_KEY) throw new Error("No OpenAI API key was set.");
+
     const config = new Configuration({
       apiKey: process.env.OPEN_AI_KEY,
     });
-    const openai = new OpenAIApi(config);
-    this.openai = openai;
+    this.openai = new OpenAIApi(config);
   }
 
-  isValidChatModel(modelName = "") {
+  async isValidChatCompletionModel(modelName = "") {
     const validModels = ["gpt-4", "gpt-3.5-turbo"];
-    return validModels.includes(modelName);
+    const isPreset = validModels.some((model) => modelName === model);
+    if (isPreset) return true;
+
+    const model = await this.openai
+      .retrieveModel(modelName)
+      .then((res) => res.data)
+      .catch(() => null);
+    return !!model;
+  }
+
+  constructPrompt({
+    systemPrompt = "",
+    contextTexts = [],
+    chatHistory = [],
+    userPrompt = "",
+  }) {
+    const prompt = {
+      role: "system",
+      content: `${systemPrompt}
+    Context:
+    ${contextTexts
+      .map((text, i) => {
+        return `[CONTEXT ${i}]:\n${text}\n[END CONTEXT ${i}]\n\n`;
+      })
+      .join("")}`,
+    };
+    return [prompt, ...chatHistory, { role: "user", content: userPrompt }];
   }
 
   async isSafe(input = "") {
@@ -47,7 +77,7 @@ class OpenAi {
 
   async sendChat(chatHistory = [], prompt, workspace = {}) {
     const model = process.env.OPEN_MODEL_PREF;
-    if (!this.isValidChatModel(model))
+    if (!(await this.isValidChatCompletionModel(model)))
       throw new Error(
         `OpenAI chat: ${model} is not valid for chat completion!`
       );
@@ -72,7 +102,6 @@ class OpenAi {
         return res.choices[0].message.content;
       })
       .catch((error) => {
-        console.log(error);
         throw new Error(
           `OpenAI::createChatCompletion failed with: ${error.message}`
         );
@@ -81,8 +110,13 @@ class OpenAi {
     return textResponse;
   }
 
-  async getChatCompletion(messages = [], { temperature = 0.7 }) {
+  async getChatCompletion(messages = null, { temperature = 0.7 }) {
     const model = process.env.OPEN_MODEL_PREF || "gpt-3.5-turbo";
+    if (!(await this.isValidChatCompletionModel(model)))
+      throw new Error(
+        `OpenAI chat: ${model} is not valid for chat completion!`
+      );
+
     const { data } = await this.openai.createChatCompletion({
       model,
       messages,
@@ -92,27 +126,8 @@ class OpenAi {
     if (!data.hasOwnProperty("choices")) return null;
     return data.choices[0].message.content;
   }
-
-  async embedTextInput(textInput) {
-    const result = await this.embedChunks(textInput);
-    return result?.[0] || [];
-  }
-
-  async embedChunks(textChunks = []) {
-    const {
-      data: { data },
-    } = await this.openai.createEmbedding({
-      model: "text-embedding-ada-002",
-      input: textChunks,
-    });
-
-    return data.length > 0 &&
-      data.every((embd) => embd.hasOwnProperty("embedding"))
-      ? data.map((embd) => embd.embedding)
-      : null;
-  }
 }
 
 module.exports = {
-  OpenAi,
+  OpenAiLLM,
 };
